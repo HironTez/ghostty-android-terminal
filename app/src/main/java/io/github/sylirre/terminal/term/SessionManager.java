@@ -146,9 +146,7 @@ public final class SessionManager {
         setContext(context);
         SessionCommand command = userland
                 ? UserlandRootfs.command(context, userlandOptions)
-                : SessionCommand.androidShell(
-                        context.getFilesDir().getAbsolutePath(),
-                        context.getCacheDir().getAbsolutePath());
+                : SessionCommand.androidShell(context);
         return create(command, cols, rows, cellWidthPx, cellHeightPx,
                 scrollbackLines, terminateProcessesOnExit, listener, tap);
     }

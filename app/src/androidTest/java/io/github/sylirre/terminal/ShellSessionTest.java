@@ -54,9 +54,7 @@ public class ShellSessionTest {
     public void setUp() throws IOException {
         Context ctx = ApplicationProvider.getApplicationContext();
         session = new TerminalSession(80, 24, 8, 16, 10_000,
-                ctx.getFilesDir().getAbsolutePath(),
-                ctx.getCacheDir().getAbsolutePath(),
-                listener);
+                ctx, listener);
     }
 
     @After
@@ -83,16 +81,15 @@ public class ShellSessionTest {
     }
 
     @Test
-    public void pathIsSystemBinOnly() {
+    public void pathContainsBundledToolsAndSystemBin() {
         session.write("echo \"PATH=[$PATH]\"\n");
-        waitForOnScreen("PATH=[/system/bin]");
+        waitForOnScreen("/files/android-bin:/system/bin]");
     }
 
     @Test
     public void systemBinariesAreReachable() {
-        // `id` is a toybox binary in /system/bin; running it proves PATH
-        // resolution and exec from the app domain work.
-        session.write("id\n");
+        // Explicit system path: unshadowed Android toolbox remains usable.
+        session.write("/system/bin/id\n");
         waitForOnScreen("uid=");
     }
 

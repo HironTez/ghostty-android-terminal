@@ -593,8 +593,7 @@ final class HeadlessConnection implements Runnable {
             return UserlandRootfs.command(context,
                     UserlandSetup.options(context, settings).withCommand(guest, cwd, env));
         }
-        return SessionCommand.androidShell(context.getFilesDir().getAbsolutePath(),
-                context.getCacheDir().getAbsolutePath(),
+        return SessionCommand.androidShell(context,
                 shArgs.toArray(new String[0]), env, cwd);
     }
 

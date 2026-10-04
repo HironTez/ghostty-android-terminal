@@ -406,8 +406,7 @@ public class HeadlessApiTest {
     @Test
     public void queryRepliesSuppressedOnlyWhileTapped() throws Exception {
         Context c = ctx();
-        SessionCommand cmd = SessionCommand.androidShell(c.getFilesDir().getAbsolutePath(),
-                c.getCacheDir().getAbsolutePath());
+        SessionCommand cmd = SessionCommand.androidShell(c);
         TerminalSession s = new TerminalSession(80, 24, 8, 16, 1000, cmd, false, null, NULL_TAP);
         try {
             // Ask for a cursor report and read a line: whatever arrived on stdin
@@ -438,8 +437,7 @@ public class HeadlessApiTest {
     @Test
     public void uiResizeDeferredWhileTapped() throws Exception {
         Context c = ctx();
-        SessionCommand cmd = SessionCommand.androidShell(c.getFilesDir().getAbsolutePath(),
-                c.getCacheDir().getAbsolutePath());
+        SessionCommand cmd = SessionCommand.androidShell(c);
         TerminalSession s = new TerminalSession(80, 24, 8, 16, 1000, cmd, false, null, NULL_TAP);
         try {
             s.resize(50, 10, 8, 16);           // the phone's grid: deferred
@@ -458,8 +456,7 @@ public class HeadlessApiTest {
     @Test
     public void sessionsCreatedThroughManagerAreReapedWithoutListener() throws Exception {
         Context c = ctx();
-        SessionCommand cmd = SessionCommand.androidShell(c.getFilesDir().getAbsolutePath(),
-                c.getCacheDir().getAbsolutePath());
+        SessionCommand cmd = SessionCommand.androidShell(c);
         TerminalSession s = SessionManager.get().create(cmd, 80, 24, 8, 16, 1000, false,
                 null, null);
         s.write("exit 0\n");

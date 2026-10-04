@@ -3,6 +3,7 @@
 
 package io.github.sylirre.terminal.term;
 
+import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
@@ -166,10 +167,10 @@ public final class TerminalSession {
 
     /** Spawns /system/bin/sh; see {@link SessionCommand#androidShell}. */
     public TerminalSession(int cols, int rows, int cellWidthPx, int cellHeightPx,
-            int scrollbackLines, String homeDir, String tmpDir, Listener listener)
+            int scrollbackLines, Context context, Listener listener)
             throws IOException {
         this(cols, rows, cellWidthPx, cellHeightPx, scrollbackLines,
-                SessionCommand.androidShell(homeDir, tmpDir), listener);
+                SessionCommand.androidShell(context), listener);
     }
 
     /**

@@ -33,6 +33,16 @@ android {
         }
     }
 
+    // These lib*.so files are standalone PIE tools, not dlopen libraries.
+    // They must be extracted by the installer to an executable, read-only path.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+    sourceSets.main.jniLibs.srcDirs += rootProject.file("native/android-tools/prebuilt")
+    sourceSets.main.assets.srcDirs += rootProject.file("native/android-tools/licenses")
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -71,6 +81,49 @@ def vmImages = rootProject.file("VmImages")
 if (vmImages.isDirectory()) {
     android.sourceSets.main.assets.srcDirs += vmImages
 }
+
+// Shell tools are mandatory prebuilts, unlike optional rootfs/VM assets.
+// Fail before packaging rather than shipping a native-shell feature that breaks.
+def verifyAndroidShellTools = tasks.register("verifyAndroidShellTools") {
+    doLast {
+        ["arm64-v8a", "x86_64"].each { abi ->
+            def dir = rootProject.file("native/android-tools/prebuilt/${abi}")
+            def manifestFile = new File(dir, "build.json")
+            if (!manifestFile.isFile()) {
+                throw new GradleException("Missing Android tool manifest: ${manifestFile}; run scripts/build-android-tools.sh")
+            }
+            def manifest = new groovy.json.JsonSlurper().parse(manifestFile)
+            ["busybox", "ssh", "scp", "sftp", "ssh-keygen"].each { cmd ->
+                def executable = new File(dir, "lib${cmd}.so")
+                if (!executable.isFile()) {
+                    throw new GradleException("Missing Android tool: ${executable}; run scripts/build-android-tools.sh")
+                }
+                def actual = java.security.MessageDigest.getInstance("SHA-256")
+                        .digest(executable.bytes).encodeHex().toString()
+                if (manifest.outputs[executable.name] != actual) {
+                    throw new GradleException("Android tool checksum mismatch: ${executable}")
+                }
+            }
+        }
+        def sourceArchive = rootProject.file("native/android-tools/licenses/busybox-corresponding-source.tar.xz")
+        def sourceManifest = rootProject.file("native/android-tools/licenses/busybox-source.json")
+        if (!sourceArchive.isFile() || !sourceManifest.isFile()) {
+            throw new GradleException("Missing BusyBox corresponding source; run scripts/bundle-busybox-source.py")
+        }
+        def source = new groovy.json.JsonSlurper().parse(sourceManifest)
+        def sha256 = { file -> java.security.MessageDigest.getInstance("SHA-256")
+                .digest(file.bytes).encodeHex().toString() }
+        if (sha256(sourceArchive) != source.archive) {
+            throw new GradleException("BusyBox source archive checksum mismatch")
+        }
+        source.inputs.each { path, expected ->
+            if (sha256(rootProject.file(path)) != expected) {
+                throw new GradleException("Stale BusyBox corresponding source: ${path}; run scripts/bundle-busybox-source.py")
+            }
+        }
+    }
+}
+tasks.named("preBuild").configure { dependsOn(verifyAndroidShellTools) }
 
 dependencies {
     // Pure-Java XZ decoder for the rootfs installer (tar parsing is local
