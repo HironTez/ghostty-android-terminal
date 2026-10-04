@@ -3,6 +3,10 @@
 
 package io.github.sylirre.terminal.term;
 
+import android.content.Context;
+
+import java.io.IOException;
+
 /**
  * What a {@link TerminalSession} spawns: either a command to execve() or an
  * arm64chroot argv to run in-process ({@link TerminalNative#ptyCreateEmulator}).
@@ -30,27 +34,27 @@ public final class SessionCommand {
         this.userland = userland;
     }
 
-    /**
-     * /system/bin/sh with PATH=/system/bin.
-     *
-     * @param homeDir HOME and initial working directory (app files dir —
-     *                the only generally writable place).
-     * @param tmpDir  TMPDIR (app cache dir).
-     */
-    public static SessionCommand androidShell(String homeDir, String tmpDir) {
-        return androidShell(homeDir, tmpDir, new String[0], new String[0], null);
+    /** /system/bin/sh with bundled Android tools before the system toolbox.
+     * HOME/cwd remain the private files directory; TMPDIR is the cache. */
+    public static SessionCommand androidShell(Context context) throws IOException {
+        return androidShell(context, new String[0], new String[0], null);
     }
 
     /**
      * /system/bin/sh with {@code shArgs} after argv[0] (e.g. {@code -c script}),
      * {@code extraEnv} ({@code NAME=value}) appended to the default environment,
-     * started in {@code cwd} (null: {@code homeDir}). The headless API's
-     * Android-shell spawn and exec.
+     * started in {@code cwd} (null: the files directory). The headless API's
+     * Android-shell spawn and exec. Every Android-shell caller goes through
+     * this Context factory so the bundled tools are always prepared and on PATH.
      */
-    public static SessionCommand androidShell(String homeDir, String tmpDir,
-            String[] shArgs, String[] extraEnv, String cwd) {
+    public static SessionCommand androidShell(Context context,
+            String[] shArgs, String[] extraEnv, String cwd) throws IOException {
+        String homeDir = context.getFilesDir().getAbsolutePath();
+        String tmpDir = context.getCacheDir().getAbsolutePath();
+        String bin = AndroidShellTools.prepare(context).getAbsolutePath();
         String[] base = {
-                "PATH=/system/bin",
+                "PATH=" + bin + ":/system/bin",
+                "SHELL=/system/bin/sh",
                 "HOME=" + homeDir,
                 "TMPDIR=" + tmpDir,
                 "TERM=xterm-256color",

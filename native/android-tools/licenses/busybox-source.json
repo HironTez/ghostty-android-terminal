@@ -1,0 +1,25 @@
+{
+  "archive": "15fcb787cdcdcb38d05e4966782d17bda6b1bbd55b22dde1a6a90b395c550381",
+  "inputs": {
+    "native/android-tools/sources/busybox-1.37.0.tar.bz2": "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4",
+    "native/android-tools/sources.lock": "2293c9de2d3b75eed2f839addc74c86c0d2afc20070705052100cf6770c44b5d",
+    "native/android-tools/busybox.config": "24a7b18da67ae545d4be856b2cdcfcb8333f29cae760fc8c54f25b26d9dae383",
+    "scripts/build-android-tools.sh": "861ffed2ee4cea9d938c971f7f7aa6705564077f607827d9e97456e81ce1f815",
+    "scripts/fetch-android-tools.sh": "cddb44f3814cdf80579a8ad670da7e2fd28972339dca35dddaec97be95a91722",
+    "scripts/verify-android-tools.py": "40ac52282bf15f2fef0994a066a404186ea2cd6ec98fcab14aa002c747a27d83",
+    "scripts/bundle-busybox-source.py": "ae8f4e65cb341476173c626e94544f9dd4be5af0f787aa5ca71367573cb1f671",
+    "native/android-tools/patches/busybox/0001-apk-name.patch": "69b6d20854f37161863f09ae9cd8432f2ffcdc315b3d41130d32161b61ac4162",
+    "native/android-tools/patches/openssh/0001-home-and-backup.patch": "a5ec143826f46d7381c4844c48ee9619eb309cda5e47a3d14b12c74aecd37fc6",
+    "native/android-tools/patches/openssh/0002-android-public-resolver.patch": "c61bfd68124c91b8deddd2c91d77e12281209d7447876309a878c7a18dfda9a7",
+    "native/android-tools/patches/openssh/android-passwd.h": "bbfc12e55bc5dfdbcdc707a718207b0bdefb77a6b39c524a340a50efc9bfdd29",
+    "native/android-tools/licenses/App-and-build-scripts-LICENSE.txt": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "native/android-tools/licenses/BusyBox-LICENSE.txt": "bbfc9843646d483c334664f651c208b9839626891d8f17604db2146962f43548",
+    "native/android-tools/licenses/Local-patches-LICENSE.txt": "767ad58bb4d4f600b04851bd8f2ef4bf31e0dcf42248eb21175d3faa6229474a",
+    "native/android-tools/licenses/OpenSSH-LICENCE.txt": "5bb5b160726ef5756e4f32fe95b35249c294962419650f48d05134b486d27ccb",
+    "native/android-tools/licenses/OpenSSH-file-notices.txt": "8471a2d5758a19486d9ede548eb553b539aac72d4892b2775ea64df1bfdce788",
+    "native/android-tools/licenses/OpenSSL-LICENSE.txt": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
+    "native/android-tools/licenses/OpenSSL-file-notices.txt": "abc84e546c023643849eb6489973a73d750f49e0460cfb77e4fbbf3ef2ab2244",
+    "native/android-tools/prebuilt/arm64-v8a/busybox.config": "e715d5ce3ac7dd215e6ff914816f65ee7019a50da5153bb2291fb048017f7313",
+    "native/android-tools/prebuilt/x86_64/busybox.config": "e715d5ce3ac7dd215e6ff914816f65ee7019a50da5153bb2291fb048017f7313"
+  }
+}

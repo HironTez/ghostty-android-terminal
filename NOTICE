@@ -64,6 +64,41 @@ License: Public domain (SPDX: 0BSD)
 Upstream: https://tukaani.org/xz/java.html
 
 ================================================================================
+Android shell tools (standalone executables; never linked into libterm.so)
+
+BusyBox 1.37.0
+Copyright: BusyBox authors and contributors; see the full corresponding source.
+License: GPL-2.0-only, with upstream per-file notices/exceptions retained.
+Upstream: https://busybox.net/
+License: native/android-tools/licenses/BusyBox-LICENSE.txt
+Complete corresponding source (upstream tarball, config, local patch and build
+scripts) is distributed in every APK at assets/busybox-corresponding-source.tar.xz
+and in native/android-tools/licenses/busybox-corresponding-source.tar.xz.
+BusyBox is a separate process, not a GPL library linked into this application.
+
+OpenSSH portable 10.5p1 (ssh, scp, sftp, ssh-keygen clients)
+Copyright: OpenSSH authors and contributors; upstream notices retained in LICENCE.
+License: BSD/ISC and other permissive licenses documented in upstream LICENCE.
+Upstream: https://www.openssh.com/
+License: native/android-tools/licenses/OpenSSH-LICENCE.txt
+Per-file notices: native/android-tools/licenses/OpenSSH-file-notices.txt
+These are locally modified Android client builds (HOME/passwd, shell, backup).
+
+OpenSSL 3.5.9 (static libcrypto in the OpenSSH executables only)
+Copyright: The OpenSSL Project Authors
+License: Apache-2.0
+Upstream: https://www.openssl.org/
+License: native/android-tools/licenses/OpenSSL-LICENSE.txt
+Per-file notices: native/android-tools/licenses/OpenSSL-file-notices.txt
+OpenSSL is not linked into BusyBox or libterm.so.
+
+Local compatibility patch notices and license texts:
+native/android-tools/licenses/Local-patches-LICENSE.txt
+All the listed shell-tool license texts are also distributed as APK assets.
+Pinned archives, checksums, config and patches: native/android-tools/
+Build and source distribution details: docs/android-shell-tools.md
+
+================================================================================
 Test-only dependencies (NOT distributed in the APK)
 
 The instrumented test suite uses AndroidX Test and Espresso, licensed under
