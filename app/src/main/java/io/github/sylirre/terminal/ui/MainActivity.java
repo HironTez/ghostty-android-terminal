@@ -28,6 +28,8 @@ import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.util.Base64;
 import android.util.DisplayMetrics;
+import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewOutlineProvider;
 import android.view.WindowInsets;
@@ -106,12 +108,17 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
     private ChromePalette chrome;
     private long lastClipToastUptime;
     private ExtraKeysView extraKeys;
+    private TerminalInputFieldView inputField;
+    private TextView inputFieldButton;
+    private boolean inputFieldOpen;
+    private static final String STATE_INPUT_FIELD_OPEN = "input_field_open";
+    private static final String STATE_SESSION_INDEX = "selected_session_index";
     private TerminalSession current;
     private AppSettings settings;
     private ThemeStore themeStore;
     private ExtraKeysConfig extraKeysConfig;
     private boolean forceShell;
-    /** Back interception while the find bar is open (predictive back). */
+    /** Back interception while search or the draft field is open (predictive back). */
     private BackGesture backGesture;
     /** First-session spawn is held back while the onboarding wizard runs. */
     private boolean awaitingOnboarding;
@@ -143,6 +150,9 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         chrome = ChromePalette.from(this, 0xFF000000);
 
         settings = new AppSettings(this);
+        installInputField();
+        inputFieldOpen = savedInstanceState != null
+                && savedInstanceState.getBoolean(STATE_INPUT_FIELD_OPEN);
         // Existing installs never see the intro: a rootfs on disk means the
         // user was set up before onboarding existed.
         if (!settings.onboardingCompleted() && UserlandRootfs.isInstalled(this)) {
@@ -274,7 +284,10 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
                 }
             });
         } else {
-            switchTo(sessions.sessions().get(0));
+            int index = savedInstanceState == null ? 0
+                    : savedInstanceState.getInt(STATE_SESSION_INDEX, 0);
+            switchTo(sessions.sessions().get(Math.max(0,
+                    Math.min(index, sessions.sessions().size() - 1))));
         }
 
         SessionService.setExitListener(onServiceExit);
@@ -331,12 +344,28 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         extraKeys.setRowEnabled(settings.extraKeysEnabled());
         extraKeys.setHideWhenKeyboardHidden(settings.hideExtraKeysWhenKeyboardHidden());
         extraKeys.setKeyVerticalPaddingDp(settings.extraKeysVerticalPadding());
+        applyInputFieldSettings();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle state) {
+        inputField.saveSelection();
+        state.putBoolean(STATE_INPUT_FIELD_OPEN, inputFieldOpen);
+        state.putInt(STATE_SESSION_INDEX, sessions.indexOf(current));
+        super.onSaveInstanceState(state);
+    }
+
+    @Override
+    protected void onPause() {
+        inputField.saveSelection();
+        super.onPause();
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
         SessionService.clearExitListener(onServiceExit);
+        inputField.release();
         if (bellTone != null) {
             bellTone.release(); // frees the native audio track it holds
             bellTone = null;
@@ -384,6 +413,8 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         tabs.applyPalette(p);
         extraKeys.applyPalette(p);
         searchBar.applyPalette(p);
+        inputField.applyPalette(p);
+        styleInputFieldButton();
         if (Build.VERSION.SDK_INT >= 30) {
             WindowInsetsController controller = getWindow().getInsetsController();
             if (controller != null) {
@@ -709,10 +740,81 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         if (searchBar != null) hideSearch(); // matches belong to the old session
         current = s;
         terminal.attachSession(s);
+        inputField.bindSession(s);
         updateTabs();
+        if (inputFieldOpen) inputField.focusEditor();
+    }
+
+    /** Adds the draft editor and its independent toggle without altering key profiles. */
+    private void installInputField() {
+        inputField = new TerminalInputFieldView(this);
+        LinearLayout column = (LinearLayout) extraKeys.getParent();
+        column.addView(inputField, column.indexOfChild(extraKeys), new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        inputField.setListener((target, text, enter) -> {
+            if (target != current || terminal.session() != target
+                    || sessions.indexOf(target) < 0 || target.exitCode() != null) return false;
+            // The shared paste encoder respects bracketed paste, normalizes
+            // newlines, and ignores sticky modifiers even for one-character drafts.
+            if (!terminal.pasteText(text)) return false;
+            if (enter) target.sendKey(KeyEvent.KEYCODE_ENTER, 0, null, 0);
+            return true;
+        });
+        inputFieldButton = new TextView(this);
+        inputFieldButton.setText("Aa");
+        inputFieldButton.setTextSize(16);
+        inputFieldButton.setGravity(Gravity.CENTER);
+        inputFieldButton.setFocusable(true);
+        inputFieldButton.setOnClickListener(v -> setInputFieldOpen(!inputFieldOpen));
+        LinearLayout top = (LinearLayout) mainTopBar;
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                Chrome.dp(this, R.dimen.touch_min), Chrome.dp(this, R.dimen.touch_min));
+        lp.setMarginStart(Chrome.dp(this, R.dimen.space_1));
+        top.addView(inputFieldButton, top.indexOfChild(findViewById(R.id.settings_button)), lp);
+        styleInputFieldButton();
+    }
+
+    private void applyInputFieldSettings() {
+        inputFieldButton.setVisibility(settings.inputFieldEnabled() ? View.VISIBLE : View.GONE);
+        inputField.setAutoCapitalization(settings.inputFieldAutoCapitalization());
+        setInputFieldOpen(inputFieldOpen && settings.inputFieldEnabled());
+    }
+
+    private void setInputFieldOpen(boolean open) {
+        boolean closing = inputFieldOpen && !open;
+        inputFieldOpen = open;
+        inputField.saveSelection();
+        inputField.setVisibility(open ? View.VISIBLE : View.GONE);
+        styleInputFieldButton();
+        backGesture.setEnabled(open || searchBar.isOpen());
+        if (open && !searchBar.isOpen() && current != null) inputField.focusEditor();
+        else if (closing && !searchBar.isOpen()) {
+            terminal.requestFocus();
+            if (settings.touchKeyboard()) showKeyboard();
+        }
+    }
+
+    private void styleInputFieldButton() {
+        inputFieldButton.setContentDescription(inputFieldOpen
+                ? "Hide terminal input field" : "Show terminal input field");
+        inputFieldButton.setSelected(inputFieldOpen);
+        if (Build.VERSION.SDK_INT >= 30) {
+            inputFieldButton.setStateDescription(inputFieldOpen ? "Open" : "Closed");
+        }
+        inputFieldButton.setTextColor(inputFieldOpen ? chrome.onAccent : chrome.textSecondary);
+        inputFieldButton.setBackground(chrome.ripple(
+                inputFieldOpen ? chrome.accent : chrome.surface2,
+                Chrome.dimen(this, R.dimen.radius_md), inputFieldOpen ? 0 : chrome.border));
     }
 
     private void showKeyboard() {
+        // Returning from Settings/background must not steal the search editor's
+        // focus and redirect its keyboard input into a draft or the live PTY.
+        if (searchBar.isOpen()) return;
+        if (inputFieldOpen) {
+            inputField.focusEditor();
+            return;
+        }
         terminal.requestFocus();
         InputMethodManager imm = getSystemService(InputMethodManager.class);
         if (imm != null) imm.showSoftInput(terminal, 0);
@@ -730,7 +832,7 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         boolean wasOpen = searchBar.isOpen();
         searchBar.hide();
         setSearchButtonActive(false);
-        backGesture.setEnabled(false);
+        backGesture.setEnabled(inputFieldOpen);
         terminal.searchClose();
         // Always restore the keyboard when search was actually open; search
         // requires it and the user expects it back when dismissing the bar.
@@ -766,13 +868,20 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
 
     /**
      * Back handling shared by {@code onBackPressed} and the predictive-back
-     * callback: an open find bar closes first. Returns true when back was
+     * callback: an open find bar closes first, then the draft field (without
+     * discarding its text). Returns true when back was
      * consumed here rather than leaving the app.
      */
     private boolean handleBack() {
-        if (searchBar == null || !searchBar.isOpen()) return false;
-        hideSearch();
-        return true;
+        if (searchBar != null && searchBar.isOpen()) {
+            hideSearch();
+            return true;
+        }
+        if (inputFieldOpen) {
+            setInputFieldOpen(false);
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -799,12 +908,14 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
             if (sessions.isEmpty()) {
                 terminal.attachSession(null);
                 current = null;
+                inputField.bindSession(null);
             }
             updateTabs();
             return;
         }
         sessions.close(s);
         List<TerminalSession> remaining = sessions.sessions();
+        TerminalInputFieldView.retainSessions(remaining);
         if (remaining.isEmpty()) {
             SessionService.stop(this);
             finishAndRemoveTask();
@@ -987,6 +1098,7 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         // ISO guest is diskless: stopping it would throw away everything in it).
         terminal.attachSession(null);
         current = null;
+        inputField.bindSession(null);
         sessions.closeSessions();
         updateTabs();
         SessionService.refresh(this);
@@ -1238,6 +1350,7 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         List<String> titles = new ArrayList<>();
         List<TabStripView.TabProgress> progress = new ArrayList<>();
         List<TerminalSession> all = sessions.sessions();
+        TerminalInputFieldView.retainSessions(all);
         boolean showProgress = settings.showProgress();
         for (int i = 0; i < all.size(); i++) {
             TerminalSession s = all.get(i);

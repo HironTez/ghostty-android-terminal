@@ -25,6 +25,8 @@ public final class AppSettings {
     private static final String KEY_KEEP_SCREEN_ON = "keep_screen_on";
     private static final String KEY_IMMERSIVE_MODE = "immersive_mode";
     private static final String KEY_RICH_KEYBOARD = "rich_keyboard";
+    private static final String KEY_INPUT_FIELD_ENABLED = "input_field_enabled";
+    private static final String KEY_INPUT_FIELD_AUTO_CAPITALIZATION = "input_field_auto_capitalization";
     private static final String KEY_EXTRA_KEYS_ENABLED = "extra_keys_enabled";
     private static final String KEY_SCROLLBACK_LINES = "scrollback_lines";
     private static final String KEY_BG_IMAGE_PATH = "bg_image_path";
@@ -139,6 +141,24 @@ public final class AppSettings {
 
     public void setRichKeyboard(boolean enabled) {
         prefs.edit().putBoolean(KEY_RICH_KEYBOARD, enabled).apply();
+    }
+
+    /** Shows the independent draft-field toggle; the editor initially stays closed. */
+    public boolean inputFieldEnabled() {
+        return prefs.getBoolean(KEY_INPUT_FIELD_ENABLED, true);
+    }
+
+    public void setInputFieldEnabled(boolean enabled) {
+        prefs.edit().putBoolean(KEY_INPUT_FIELD_ENABLED, enabled).apply();
+    }
+
+    /** Off by default so keyboards do not uppercase case-sensitive commands/paths. */
+    public boolean inputFieldAutoCapitalization() {
+        return prefs.getBoolean(KEY_INPUT_FIELD_AUTO_CAPITALIZATION, false);
+    }
+
+    public void setInputFieldAutoCapitalization(boolean enabled) {
+        prefs.edit().putBoolean(KEY_INPUT_FIELD_AUTO_CAPITALIZATION, enabled).apply();
     }
 
     /**

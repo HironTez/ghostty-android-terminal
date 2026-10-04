@@ -141,6 +141,17 @@ public final class SettingsActivity extends Activity {
                 settings::setRichKeyboard)
                 .enabledWhen(settings::touchKeyboard));
         keyboard.add(new Setting.Toggle(
+                "Terminal input field",
+                "Show the Aa control for a separate autocorrect draft. Send or Run explicitly; typing never sends input.",
+                settings::inputFieldEnabled,
+                settings::setInputFieldEnabled));
+        keyboard.add(new Setting.Toggle(
+                "Capitalize draft sentences",
+                "Ask the keyboard to capitalize sentences in the input field. Off is safer for case-sensitive commands and paths.",
+                settings::inputFieldAutoCapitalization,
+                settings::setInputFieldAutoCapitalization)
+                .enabledWhen(settings::inputFieldEnabled));
+        keyboard.add(new Setting.Toggle(
                 getString(R.string.setting_extra_keys_enabled_title),
                 getString(R.string.setting_extra_keys_enabled_summary),
                 settings::extraKeysEnabled,
