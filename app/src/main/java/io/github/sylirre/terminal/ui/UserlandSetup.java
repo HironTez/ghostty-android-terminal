@@ -31,17 +31,29 @@ public final class UserlandSetup {
      * from the new rootfs ({@link #applyPostInstallDefaults}). The outcome is
      * persisted the moment the extract succeeds, so a killed process cannot
      * lose a completed setup. Blocking; call from a background thread.
-     * A no-op extract when a rootfs is already installed (see
-     * {@link UserlandRootfs#install}).
+     *
+     * Returns false, extracting and recording nothing but onboarding
+     * completed, when a rootfs is already installed — possibly a different
+     * distro, installed concurrently by the wizard or the headless API, whose
+     * settings must not be overwritten with this one's.
      */
-    public static void install(Context context, UserlandDistro distro,
+    public static boolean install(Context context, UserlandDistro distro,
             UserlandRootfs.InstallListener progress) throws IOException {
         Context app = context.getApplicationContext();
-        UserlandRootfs.install(app, distro.assetName, progress);
         AppSettings settings = new AppSettings(app);
-        settings.setUserlandDistroAsset(distro.assetName);
-        settings.setOnboardingCompleted(true);
-        applyPostInstallDefaults(app, settings);
+        // UserlandRootfs.install is synchronized on the class too: holding
+        // it across check, extract and persist makes the three one step.
+        synchronized (UserlandRootfs.class) {
+            if (UserlandRootfs.isInstalled(app)) {
+                settings.setOnboardingCompleted(true);
+                return false;
+            }
+            UserlandRootfs.install(app, distro.assetName, progress);
+            settings.setUserlandDistroAsset(distro.assetName);
+            settings.setOnboardingCompleted(true);
+            applyPostInstallDefaults(app, settings);
+        }
+        return true;
     }
 
     /**

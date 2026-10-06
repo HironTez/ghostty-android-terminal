@@ -691,8 +691,9 @@ final class HeadlessConnection implements Runnable {
             return;
         }
         final long[] last = {0};
+        boolean didInstall;
         try {
-            UserlandSetup.install(context, pick, (extracted, read, total) -> {
+            didInstall = UserlandSetup.install(context, pick, (extracted, read, total) -> {
                 long now = SystemClock.uptimeMillis();
                 if (now - last[0] < 250) return;
                 last[0] = now;
@@ -710,6 +711,14 @@ final class HeadlessConnection implements Runnable {
             out.progress(new JSONObject().put("state", "failed")
                     .put("error", String.valueOf(e.getMessage())).toString());
             out.exit(1);
+            return;
+        }
+        if (!didInstall) {
+            // Lost a race with another install (the wizard, or a second client).
+            String asset = new AppSettings(context).userlandDistroAsset();
+            out.progress(new JSONObject().put("state", "already-installed")
+                    .put("distro", asset == null ? JSONObject.NULL : asset).toString());
+            out.exit(0);
             return;
         }
         out.progress(new JSONObject().put("state", "done").put("distro", pick.id)
