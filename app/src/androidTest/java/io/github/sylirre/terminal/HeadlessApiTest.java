@@ -199,13 +199,45 @@ public class HeadlessApiTest {
     }
 
     @Test
-    public void peerUidPolicy() {
-        assertTrue(HeadlessServer.isAllowedUid(0));
-        assertTrue(HeadlessServer.isAllowedUid(2000));
-        assertTrue(HeadlessServer.isAllowedUid(Process.myUid()));
-        assertFalse(HeadlessServer.isAllowedUid(1000));       // system
-        assertFalse(HeadlessServer.isAllowedUid(Process.myUid() + 1));
-        assertFalse(HeadlessServer.isAllowedUid(10999));      // another app
+    public void peerPolicy() {
+        int me = Process.myUid(), pid = Process.myPid();
+        assertTrue(HeadlessServer.isAllowedPeer(0, 1));
+        assertTrue(HeadlessServer.isAllowedPeer(2000, 1234));
+        assertTrue(HeadlessServer.isAllowedPeer(me, pid));
+        // Same uid, other process: a userland guest process.
+        assertFalse(HeadlessServer.isAllowedPeer(me, pid + 1));
+        assertFalse(HeadlessServer.isAllowedPeer(1000, pid));     // system
+        assertFalse(HeadlessServer.isAllowedPeer(me + 1, pid));
+        assertFalse(HeadlessServer.isAllowedPeer(10999, pid));    // another app
+    }
+
+    @Test
+    public void helloProvesTheServerKeyThenServesTheRequest() throws Exception {
+        String key = HeadlessServer.keyHex();
+        assertNotNull(key);
+        String nonce = "00112233445566778899aabbccddeeff";
+        javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+        byte[] k = new byte[key.length() / 2];
+        for (int i = 0; i < k.length; i++) {
+            k[i] = (byte) Integer.parseInt(key.substring(2 * i, 2 * i + 2), 16);
+        }
+        mac.init(new javax.crypto.spec.SecretKeySpec(k, "HmacSHA256"));
+        StringBuilder want = new StringBuilder();
+        for (byte b : mac.doFinal(("gterm-hello-v1:" + nonce).getBytes(StandardCharsets.UTF_8))) {
+            want.append(String.format("%02x", b & 0xff));
+        }
+        try (Client c = new Client()) {
+            JSONObject h = c.request(new JSONObject().put("op", "hello").put("nonce", nonce));
+            assertTrue(h.toString(), h.getBoolean("ok"));
+            assertEquals(want.toString(), h.getString("proof"));
+            JSONObject r = c.request(req("status"));   // same connection
+            assertTrue(r.toString(), r.getBoolean("ok"));
+            assertTrue(r.has("rootfs"));
+        }
+        try (Client c = new Client()) {
+            JSONObject h = c.request(new JSONObject().put("op", "hello").put("nonce", "xyz"));
+            assertFalse(h.getBoolean("ok"));
+        }
     }
 
     // --- interactive sessions -------------------------------------------------

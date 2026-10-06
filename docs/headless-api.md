@@ -31,12 +31,28 @@ gterm ──TCP 127.0.0.1:7777──adb──► adbd ──connect──► @io
   reached with `adb forward tcp:N localabstract:…`. The app's rootfs and
   arm64chroot are unreachable for the shell uid (mode 0700 app data, no exec
   from app data), so everything runs inside the app process.
-- **Auth.** Any process can `connect()` to an abstract socket, so every
-  connection's peer uid is read with `SO_PEERCRED`
-  (`LocalSocket.getPeerCredentials`). Only uid 0 (root), 2000 (adb shell) and
-  the app's own uid are accepted; everything else is closed at once. Anyone
-  with ADB access gets full control of the app's shells. That matches
-  `adb shell` itself.
+- **Auth, client side.** Any process can `connect()` to an abstract socket,
+  so every connection's peer is read with `SO_PEERCRED`
+  (`LocalSocket.getPeerCredentials`) before a byte is read. Only uid 0
+  (root), uid 2000 (adb shell) and the app's own *process* are accepted.
+  Other processes of the app's uid are refused, because the userland's guest
+  processes run as that uid and must not get an unconfined Android shell this
+  way. Everything else is closed at once. Anyone with ADB access gets full
+  control of the app's shells. That matches `adb shell` itself.
+- **Auth, server side.** Abstract names are first come, first served. While
+  headless mode is off, another app could bind the name and collect what a
+  client types or sends. Each server start therefore draws a random 256-bit
+  key. Only DUMP holders can read it:
+  `adb shell dumpsys activity service io.github.sylirre.terminal/.term.SessionService headless-key`
+  (a plain dump, as in bug reports, leaves it out). A client opens with
+  `{"op":"hello","nonce":HEX}`. The server answers with
+  `proof = HMAC-SHA256(key, "gterm-hello-v1:" + nonce)`, and `gterm` sends
+  nothing more unless the proof checks out. When the name is already taken the
+  server does not start, and the dump says `headless: failed: ...`, which
+  `gterm start` reports. Raw mode with `nc` skips this check.
+  A filesystem socket in app data would avoid squatting, but `adb forward`
+  runs as the shell uid and cannot reach a path inside the app's private
+  directory.
 - **Sessions are shared with the UI.** Headless sessions live in the same
   `SessionManager`. If the app is opened they appear as tabs, and UI tabs can
   be attached to from the host.
@@ -116,7 +132,8 @@ In interactive sessions the local terminal is in raw mode, window size
 changes are forwarded, and **Ctrl-]** detaches; the session keeps running.
 Closing the client also only detaches. The session ends when its shell exits,
 or with `gterm kill`. `gterm exec` exits with the remote status (128+N when
-the command died of signal N). Ctrl-C and other signals are forwarded to the
+the command died of signal N). gterm's own failures (no server, a refused
+request, a failed identity check) exit 255, like ssh. Ctrl-C and other signals are forwarded to the
 remote process group. Without `--argv`, the words after `--` are joined and
 run by the target's `sh -c` (ssh semantics). `exec` runs in the userland when
 a usable rootfs is installed, otherwise in `/system/bin/sh`. `--type` picks
@@ -132,7 +149,9 @@ stty raw -echo; (printf 'RAW spawn userland 120 40\n'; cat) | nc 127.0.0.1 7777;
 ## Protocol (v1)
 
 One connection carries one request. The client sends a single JSON line
-terminated by `\n`. The server answers with one JSON line:
+terminated by `\n`, optionally preceded by a `hello` line (see Auth) whose
+answer comes first. A client has 30 seconds to send its request; at most 32
+connections are served at once. The server answers with one JSON line:
 `{"ok":true,"v":1,...}` or `{"ok":false,"v":1,"error":"..."}`. For
 streaming ops both sides then switch to frames,
 `type:u8 | len:u32 big-endian | payload`:
@@ -151,6 +170,7 @@ Requests (`"v":1` may be omitted):
 
 | Request | Response, then |
 | --- | --- |
+| `{"op":"hello","nonce":"<16..128 hex>"}` | `{proof}`; then the real request follows on the same connection |
 | `{"op":"status"}` | `rootfs{installed,usable,distro}`, `distros[{id,version,asset}]`, `sessions`, `vm{running,images_installed,images_bundled,terminals}`, `wakelock`, `autostart`, `onboarding_completed`, `uid`, `version` |
 | `{"op":"list"}` | `sessions[{id,type,label,title,cols,rows,exit,attached,ui,vm_terminal?}]` |
 | `{"op":"spawn","type":"userland\|shell\|vm","cols":120,"rows":40,"attach":true}` | `{id,type}`, then DATA both ways, RESIZE up, EXIT down when the session ends. Optional `argv`, `cmd`, `cwd`, `env` replace the login shell (`shell`/`userland`); optional `terminal` picks a guest terminal (`vm`). `"attach":false` returns at once |
@@ -202,6 +222,10 @@ session ends.
 
 ## Troubleshooting
 
+- `server identity check failed`: something other than the app answered on
+  the socket name (or `GTERM_KEY` is stale). Check `adb shell dumpsys activity
+  service io.github.sylirre.terminal/.term.SessionService` and look for an
+  app squatting the name.
 - `connection closed before a response`: headless mode is off
   (`gterm start`), or the forward points at a stale socket
   (`adb forward --remove tcp:7777`).

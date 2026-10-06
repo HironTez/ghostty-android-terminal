@@ -44,6 +44,8 @@ import io.github.sylirre.terminal.ui.UserlandSetup;
  */
 final class HeadlessConnection implements Runnable {
     private static final int MAX_LINE = 1 << 16;
+    /** How long a client may take to send its request line(s). */
+    private static final int REQUEST_TIMEOUT_MS = 30_000;
     private static final int SIGHUP = 1;
     private static final int SIGKILL = 9;
     /** Nominal cell size for the pixel fields of a headless PTY's winsize. */
@@ -67,25 +69,52 @@ final class HeadlessConnection implements Runnable {
         try {
             in = new DataInputStream(new BufferedInputStream(sock.getInputStream(), 1 << 16));
             out = new Frames.Writer(new BufferedOutputStream(sock.getOutputStream(), 1 << 16));
+            // A client that connects and says nothing must not pin a thread
+            // (and a connection slot) forever; streams run untimed after.
+            sock.setSoTimeout(REQUEST_TIMEOUT_MS);
             String line = readLine();
             if (line == null) return;
-            if (line.startsWith("RAW ") || line.equals("RAW")) {
-                handleRaw(line);
-                return;
+            JSONObject req = null;
+            if (!isRaw(line)) {
+                try {
+                    req = new JSONObject(line);
+                } catch (JSONException e) {
+                    error("bad request: " + e.getMessage());
+                    return;
+                }
+                if (req.optString("op", "").equals("hello")) {
+                    // The server proves its identity first (HeadlessServer);
+                    // the real request follows on the same connection.
+                    if (!hello(req)) return;
+                    line = readLine();
+                    if (line == null) return;
+                    req = null;
+                    if (!isRaw(line)) {
+                        try {
+                            req = new JSONObject(line);
+                        } catch (JSONException e) {
+                            error("bad request: " + e.getMessage());
+                            return;
+                        }
+                    }
+                }
             }
-            JSONObject req;
-            try {
-                req = new JSONObject(line);
-            } catch (JSONException e) {
-                error("bad request: " + e.getMessage());
-                return;
-            }
-            handle(req, false);
+            sock.setSoTimeout(0);
+            if (req == null) handleRaw(line);
+            else handle(req, false);
         } catch (IOException ignored) {
-            // Client went away.
+            // Client went away (or timed out before sending a request).
         } catch (JSONException e) {
             try {
                 error("bad request: " + e.getMessage());
+            } catch (IOException ignored) {
+            }
+        } catch (RuntimeException e) {
+            // A bad request must never take the process down: every session,
+            // the UI's included, lives in it.
+            android.util.Log.e("HeadlessServer", "request failed", e);
+            try {
+                error("internal error: " + e);
             } catch (IOException ignored) {
             }
         } finally {
@@ -110,6 +139,29 @@ final class HeadlessConnection implements Runnable {
     }
 
     // --- request dispatch ---------------------------------------------------
+
+    private static boolean isRaw(String line) {
+        return line.startsWith("RAW ") || line.equals("RAW");
+    }
+
+    /**
+     * {@code {"op":"hello","nonce":HEX}}: answers with the server's proof of
+     * key possession. Returns false (after an error reply) for a bad nonce.
+     */
+    private boolean hello(JSONObject req) throws IOException, JSONException {
+        String nonce = req.optString("nonce", "");
+        if (nonce.length() < 16 || nonce.length() > 128 || !nonce.matches("[0-9a-f]+")) {
+            error("hello needs a nonce of 16..128 lowercase hex digits");
+            return false;
+        }
+        String proof = HeadlessServer.proof(nonce);
+        if (proof == null) {
+            error("server stopping");
+            return false;
+        }
+        out.line(ok().put("proof", proof).toString());
+        return true;
+    }
 
     private void handle(JSONObject req, boolean raw) throws IOException, JSONException {
         int v = req.optInt("v", 1);

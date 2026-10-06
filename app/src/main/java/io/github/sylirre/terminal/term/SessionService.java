@@ -384,6 +384,29 @@ public final class SessionService extends Service {
         HeadlessServer.stop();
     }
 
+    /**
+     * {@code adb shell dumpsys activity service <pkg>/.term.SessionService
+     * [headless-key]}: the headless server's state and, only when asked by
+     * name, its per-start key. dumpsys requires DUMP (the adb shell has it,
+     * apps do not), so this is how {@code gterm} learns the key it then checks
+     * the server against. Not printed for a plain dump, which bug reports
+     * include.
+     */
+    @Override
+    protected void dump(java.io.FileDescriptor fd, java.io.PrintWriter pw, String[] args) {
+        String key = HeadlessServer.keyHex();
+        String err = HeadlessServer.lastError();
+        pw.println("headless: " + (key != null ? "running"
+                : err != null ? "failed: " + err : "stopped"));
+        pw.println("sessions: " + SessionManager.get().sessions().size());
+        pw.println("wakelock: " + wakeLockHeld);
+        if (key != null && args != null) {
+            for (String a : args) {
+                if ("headless-key".equals(a)) pw.println("headless-key=" + key);
+            }
+        }
+    }
+
     @Override
     public IBinder onBind(Intent intent) {
         return null; // started service only

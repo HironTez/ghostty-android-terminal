@@ -9,6 +9,7 @@ library only (POSIX hosts: Linux, macOS). See docs/headless-api.md.
   gterm start                     start headless mode (am start-foreground-service)
   gterm stop                      stop headless mode
   gterm status                    rootfs / distros / sessions / VM / wake lock
+  gterm key                       print the server key (export as GTERM_KEY)
   gterm ls                        list sessions
   gterm shell [--android|--vm]    new interactive session (userland by default)
   gterm spawn [TYPE] [-d] [--terminal N] [-- ARGV...]
@@ -24,20 +25,32 @@ Interactive sessions put the local tty in raw mode and forward window size
 changes. Ctrl-] detaches (the session keeps running; `gterm attach ID`).
 exec exits with the remote command's exit status (128+N for signal N).
 
+Every connection first checks that the server is the app: it answers a
+random nonce with an HMAC under a per-start key that only the adb shell can
+read (`dumpsys`), so another app squatting the socket name gets nothing.
+
+gterm's own failures (no connection, refused request, failed identity check)
+exit 255, like ssh.
+
 Environment: ADB (adb binary), ANDROID_SERIAL (device), GTERM_PORT (local
 port, default 7777), GTERM_NO_FORWARD=1 (skip `adb forward`, e.g. when the
-port is already forwarded or tunnelled).
+port is already forwarded or tunnelled), GTERM_KEY (the server key, skipping
+the `dumpsys` lookup; `gterm key` prints it).
 """
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
+import re
 import select
 import signal
 import socket
 import struct
 import subprocess
 import sys
+import time
 
 PKG = "io.github.sylirre.terminal"
 SOCKET_NAME = PKG + ".headless"
@@ -73,8 +86,30 @@ def ensure_forward():
     adb("forward", "tcp:%d" % port(), "localabstract:" + SOCKET_NAME, capture=True)
 
 
+def service_dump(*args):
+    """The SessionService dump (DUMP-guarded: only the adb shell can read it)."""
+    r = adb("shell", "dumpsys", "activity", "service", SERVICE, *args, check=False, capture=True)
+    return r.stdout or ""
+
+
+def server_key():
+    """The running server's per-start key, or dies saying why there is none."""
+    key = os.environ.get("GTERM_KEY")
+    if key:
+        return key.strip()
+    dump = service_dump("headless-key")
+    m = re.search(r"headless-key=([0-9a-f]{64})", dump)
+    if m:
+        return m.group(1)
+    m = re.search(r"headless: (.*)", dump)
+    if m and m.group(1).startswith("failed"):
+        die("headless server %s (another app holding the socket name?)" % m.group(1).strip())
+    die("headless mode is off (try `gterm start`)")
+
+
 class Conn:
     def __init__(self):
+        key = server_key()
         ensure_forward()
         try:
             self.sock = socket.create_connection(("127.0.0.1", port()), timeout=10)
@@ -82,6 +117,22 @@ class Conn:
             die("cannot connect to 127.0.0.1:%d: %s" % (port(), e))
         self.sock.settimeout(None)
         self.buf = b""
+        self.verify(key)
+
+    def verify(self, key):
+        """Nothing else is sent before the server proves it holds the key."""
+        nonce = os.urandom(16).hex()
+        resp = self.request({"op": "hello", "nonce": nonce})
+        try:
+            want = hmac.new(bytes.fromhex(key), ("gterm-hello-v1:" + nonce).encode(),
+                            hashlib.sha256).hexdigest()
+        except ValueError:
+            die("GTERM_KEY is not a hex key")
+        if not hmac.compare_digest(str(resp.get("proof", "")), want):
+            self.sock.close()
+            die("server identity check failed: whatever answers on %s is not this app's "
+                "headless server (another app squatting the name, or a stale GTERM_KEY); "
+                "refusing to send anything" % SOCKET_NAME)
 
     def request(self, req):
         req = dict(req, v=1)
@@ -96,8 +147,10 @@ class Conn:
             resp = json.loads(line.decode())
         except ValueError:
             die("bad response: %r" % line[:200])
+        if not isinstance(resp, dict):
+            die("bad response: %r" % line[:200])
         if not resp.get("ok"):
-            die(resp.get("error", "request failed"), 1)
+            die(resp.get("error", "request failed"))
         return resp
 
     def send(self, ftype, payload=b""):
@@ -239,6 +292,19 @@ def cmd_start(a):
     extra = ["--ez", "wakelock", "false"] if a.no_wakelock else []
     adb("shell", "am", "start-foreground-service", "-n", SERVICE,
         "-a", PKG + ".headless.START", *extra)
+    for _ in range(20):
+        dump = service_dump()
+        m = re.search(r"headless: (.*)", dump)
+        if m and m.group(1).strip() == "running":
+            return 0
+        if m and m.group(1).startswith("failed"):
+            die("headless server %s (another app holding the socket name?)" % m.group(1).strip())
+        time.sleep(0.25)
+    die("headless server did not come up (adb logcat -s SessionService HeadlessServer)")
+
+
+def cmd_key(a):
+    print(server_key())
     return 0
 
 
@@ -441,6 +507,7 @@ def main():
     s.set_defaults(fn=cmd_start)
     sub.add_parser("stop", help="stop headless mode").set_defaults(fn=cmd_stop)
     sub.add_parser("status", help="show device state").set_defaults(fn=cmd_status)
+    sub.add_parser("key", help="print the server key (for GTERM_KEY)").set_defaults(fn=cmd_key)
 
     s = sub.add_parser("ls", help="list sessions")
     s.add_argument("--json", action="store_true")

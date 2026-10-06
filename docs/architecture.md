@@ -578,8 +578,13 @@ tabs and move off a current session that is gone.
 is exported, guarded by `android.permission.DUMP` (held by the adb shell),
 and `ACTION ...headless.START` runs `HeadlessServer`: an abstract
 `LocalServerSocket` reached with `adb forward`, where every peer is checked
-with `SO_PEERCRED` (uid 0, 2000 or the app's own uid only). A connection
-carries one JSON request and then frames. A client attaches to a session as
+with `SO_PEERCRED` before anything is read (uid 0, 2000, or this very
+process — not the app uid at large, which the userland's guest processes
+share). Since an abstract name can be squatted while the server is down, each
+start draws a random key that only DUMP holders can read (the service's
+`dump()`), and the server answers a client's `hello` nonce with an HMAC under
+it, which `gterm` checks before sending anything. A connection carries one
+JSON request (after an optional `hello`) and then frames. A client attaches to a session as
 its `TerminalSession.OutputTap`, a raw-byte mirror fed by the reader thread
 before the emulator sees the bytes. While a tap is attached the emulator's
 query replies are not written back, because the remote terminal answers them,

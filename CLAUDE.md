@@ -84,7 +84,8 @@ Java  app/src/main/java/io/github/sylirre/terminal/
          OnboardingActivity (first-run intro + distro chooser + install)
          UserlandSetup (install + persisted outcome, settings → UserlandOptions)
   headless/ HeadlessServer/HeadlessConnection/Frames: ADB control API on an
-         abstract socket, peer-uid checked (docs/headless-api.md);
+         abstract socket, peer-checked; proves itself to gterm by an HMAC
+         under a per-start key only dumpsys reveals (docs/headless-api.md);
          scripts/gterm is its host client
          Chrome/ChromePalette/TopBarView/EdgeInsets/Dialogs/KeyCaps (shared
          chrome: drawable factories + design tokens, theme-derived main-screen
