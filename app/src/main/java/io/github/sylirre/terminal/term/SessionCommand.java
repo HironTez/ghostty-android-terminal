@@ -38,7 +38,18 @@ public final class SessionCommand {
      * @param tmpDir  TMPDIR (app cache dir).
      */
     public static SessionCommand androidShell(String homeDir, String tmpDir) {
-        String[] env = {
+        return androidShell(homeDir, tmpDir, new String[0], new String[0], null);
+    }
+
+    /**
+     * /system/bin/sh with {@code shArgs} after argv[0] (e.g. {@code -c script}),
+     * {@code extraEnv} ({@code NAME=value}) appended to the default environment,
+     * started in {@code cwd} (null: {@code homeDir}). The headless API's
+     * Android-shell spawn and exec.
+     */
+    public static SessionCommand androidShell(String homeDir, String tmpDir,
+            String[] shArgs, String[] extraEnv, String cwd) {
+        String[] base = {
                 "PATH=/system/bin",
                 "HOME=" + homeDir,
                 "TMPDIR=" + tmpDir,
@@ -47,8 +58,19 @@ public final class SessionCommand {
                 "ANDROID_ROOT=/system",
                 "ANDROID_DATA=/data",
         };
-        return new SessionCommand("/system/bin/sh", new String[] {"sh"}, env,
-                homeDir, labelForShell("/system/bin/sh"), false);
+        // A caller's NAME=value replaces the default of the same name.
+        java.util.LinkedHashMap<String, String> merged = new java.util.LinkedHashMap<>();
+        for (String kv : base) merged.put(kv.substring(0, kv.indexOf('=')), kv);
+        for (String kv : extraEnv) {
+            int eq = kv.indexOf('=');
+            if (eq > 0) merged.put(kv.substring(0, eq), kv);
+        }
+        String[] env = merged.values().toArray(new String[0]);
+        String[] argv = new String[1 + shArgs.length];
+        argv[0] = "sh";
+        System.arraycopy(shArgs, 0, argv, 1, shArgs.length);
+        return new SessionCommand("/system/bin/sh", argv, env,
+                cwd != null ? cwd : homeDir, labelForShell("/system/bin/sh"), false);
     }
 
     /**
