@@ -18,14 +18,12 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
-import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
 import io.github.sylirre.terminal.R;
 import io.github.sylirre.terminal.term.UserlandDistro;
-import io.github.sylirre.terminal.term.UserlandIdentity;
 import io.github.sylirre.terminal.term.UserlandRootfs;
 
 /**
@@ -575,7 +573,10 @@ public final class OnboardingActivity extends Activity {
         new Thread(() -> {
             IOException failure = null;
             try {
-                UserlandRootfs.install(getApplicationContext(), d.assetName,
+                // Extracts and persists the outcome (distro, onboarding done,
+                // derived login shell/home) on this thread, the moment it
+                // succeeds — shared with the headless API's install.
+                UserlandSetup.install(getApplicationContext(), d,
                         (extracted, compressedRead, compressedTotal) -> runOnUiThread(
                                 () -> onInstallProgress(extracted, compressedRead,
                                         compressedTotal)));
@@ -606,11 +607,8 @@ public final class OnboardingActivity extends Activity {
         installing = false;
         if (error == null) {
             installDone = true;
-            // Persist the outcome immediately (not on "Start") so a killed
-            // process cannot lose the completed setup.
-            settings.setUserlandDistroAsset(d.assetName);
-            settings.setOnboardingCompleted(true);
-            applyPostInstallDefaults();
+            // The outcome is already persisted by UserlandSetup.install (not on
+            // "Start"), so a killed process cannot lose the completed setup.
             installBar.setIndeterminate(false);
             installBar.setProgress(100);
             installTitle.setText(R.string.onb_done_title);
@@ -627,21 +625,6 @@ public final class OnboardingActivity extends Activity {
             installBar.setVisibility(View.GONE);
         }
         updateChrome();
-    }
-
-    /**
-     * Points the login-shell and home settings at what the freshly installed
-     * rootfs actually provides (e.g. {@code /bin/ash -l} on Alpine, whose
-     * root user has no bash), mirroring what the Settings identity dialog
-     * does when the identity changes.
-     */
-    private void applyPostInstallDefaults() {
-        File root = UserlandRootfs.dir(this);
-        String identity = settings.userlandIdentity();
-        String shell = UserlandRootfs.deriveLoginShell(root, identity);
-        if (shell != null) settings.setUserlandLoginShell(shell);
-        String home = UserlandIdentity.homeForIdentity(root, identity);
-        if (home != null && !home.trim().isEmpty()) settings.setUserlandHome(home);
     }
 
     private void completeShellOnly() {

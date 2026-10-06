@@ -511,13 +511,7 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
 
     private void createSession(boolean userland) {
         try {
-            UserlandOptions userlandOptions = new UserlandOptions(
-                    settings.userlandLoginShell(), storageBindingEnabledForNewSession(),
-                    settings.userlandIdentity(), settings.userlandHome(),
-                    settings.userlandWorkDir(), settings.userlandLocale(),
-                    settings.userlandPath(),
-                    settings.userlandJitEnabled(), settings.userlandJitBufferMb(),
-                    settings.userlandChrootNgEnabled());
+            UserlandOptions userlandOptions = UserlandSetup.options(this, settings);
             TerminalSession s = sessions.create(this,
                     terminal.gridCols(), terminal.gridRows(),
                     terminal.cellWidthPx(), terminal.cellHeightPx(),
@@ -963,13 +957,6 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         for (TerminalSession s : sessions.sessions()) {
             s.setTerminateProcessesOnExit(enabled);
         }
-    }
-
-    private boolean storageBindingEnabledForNewSession() {
-        if (!settings.bindExternalStorage()) return false;
-        if (StoragePermission.granted(this)) return true;
-        settings.setBindExternalStorage(false);
-        return false;
     }
 
     private void disableStorageBindingIfPermissionRevoked() {
