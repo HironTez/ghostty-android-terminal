@@ -91,9 +91,11 @@ adb shell am start-foreground-service \
 adb forward tcp:7777 localabstract:io.github.sylirre.terminal.headless
 ```
 
-`scripts/gterm start` runs the first command, and every other `gterm`
-command runs the `adb forward` itself. `gterm autostart on` makes the app
-start headless mode on `BOOT_COMPLETED` (off by default). An explicit
+`scripts/gterm start` runs the first command and waits until the server is
+up, and every other `gterm` command runs the `adb forward` itself.
+`gterm autostart on` makes the app start headless mode on `BOOT_COMPLETED`
+(off by default), provided headless mode was still on when the phone went
+down: after `gterm stop` it stays off until the next `gterm start`. An explicit
 `am start-foreground-service` also takes a freshly installed or force-stopped
 app out of the stopped state, which a boot broadcast cannot do.
 
