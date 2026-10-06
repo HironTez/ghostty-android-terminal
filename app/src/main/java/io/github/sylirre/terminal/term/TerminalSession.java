@@ -102,9 +102,11 @@ public final class TerminalSession {
     private volatile Listener listener;
     private final CopyOnWriteArrayList<Listener> extraListeners = new CopyOnWriteArrayList<>();
     private volatile OutputTap tap;
-    // Fires the tap's onEnd exactly once; endCode is what it reported.
-    private final AtomicBoolean ended = new AtomicBoolean();
-    private volatile int endCode;
+    // Set once when the session ends, with the code its tap is told; guarded
+    // by endLock so a tap attached concurrently never reads a stale code.
+    private final Object endLock = new Object();
+    private boolean ended;
+    private int endCode;
     private Thread readerThread;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicBoolean updatePending = new AtomicBoolean();
@@ -114,8 +116,9 @@ public final class TerminalSession {
     private final OutputStream toPty;
     private int lastCols, lastRows;
     private int lastCellW, lastCellH;
-    // The size the UI asked for while a tap held the size (0 = none pending);
-    // applied when the tap detaches. Guarded by sizeLock, like lastCols/Rows.
+    // The size the UI last asked for (0 = never), which a tap overrides while
+    // attached; restored when the tap detaches. Guarded by sizeLock, like
+    // lastCols/Rows.
     private int pendingUiCols, pendingUiRows, pendingUiCellW, pendingUiCellH;
     private final Object sizeLock = new Object();
     private volatile boolean closed;
@@ -228,6 +231,14 @@ public final class TerminalSession {
         lastRows = rows;
         lastCellW = cellWidthPx;
         lastCellH = cellHeightPx;
+        if (listener != null) {
+            // Spawned by the in-app view at its grid size: what a remote
+            // client's resize is undone to when it detaches.
+            pendingUiCols = cols;
+            pendingUiRows = rows;
+            pendingUiCellW = cellWidthPx;
+            pendingUiCellH = cellHeightPx;
+        }
         this.pid = pidOut[0];
         this.masterFd = ParcelFileDescriptor.adoptFd(fd);
         this.toPty = new FileOutputStream(masterFd.getFileDescriptor());
@@ -284,6 +295,14 @@ public final class TerminalSession {
         lastRows = rows;
         lastCellW = cellWidthPx;
         lastCellH = cellHeightPx;
+        if (listener != null) {
+            // Spawned by the in-app view at its grid size: what a remote
+            // client's resize is undone to when it detaches.
+            pendingUiCols = cols;
+            pendingUiRows = rows;
+            pendingUiCellW = cellWidthPx;
+            pendingUiCellH = cellHeightPx;
+        }
         machine.setWinsize(terminal, cols, rows);
 
         Thread reader = new Thread(this::readLoop, "vm-reader-" + label);
@@ -399,8 +418,19 @@ public final class TerminalSession {
             prev = tap;
             tap = t;
         }
-        if (t == null) applyPendingUiSize();
-        else if (ended.get()) t.onEnd(endCode);
+        if (t == null) {
+            applyPendingUiSize();
+        } else {
+            boolean e;
+            int code;
+            synchronized (endLock) {
+                e = ended;
+                code = endCode;
+            }
+            // May also be reported by endTap racing with this: taps must
+            // tolerate a second onEnd (Attachment ignores it).
+            if (e) t.onEnd(code);
+        }
         return prev;
     }
 
@@ -420,8 +450,11 @@ public final class TerminalSession {
     }
 
     private void endTap(int code) {
-        if (!ended.compareAndSet(false, true)) return;
-        endCode = code;
+        synchronized (endLock) {
+            if (ended) return;
+            ended = true;
+            endCode = code;
+        }
         OutputTap t = tap;
         if (t != null) t.onEnd(code);
     }
@@ -564,13 +597,13 @@ public final class TerminalSession {
      */
     public void resize(int cols, int rows, int cellWidthPx, int cellHeightPx) {
         synchronized (sizeLock) {
-            if (tap != null) {
+            if (cols > 0 && rows > 0) {
                 pendingUiCols = cols;
                 pendingUiRows = rows;
                 pendingUiCellW = cellWidthPx;
                 pendingUiCellH = cellHeightPx;
-                return;
             }
+            if (tap != null) return;
             applySize(cols, rows, cellWidthPx, cellHeightPx);
         }
     }
@@ -601,10 +634,10 @@ public final class TerminalSession {
 
     private void applyPendingUiSize() {
         synchronized (sizeLock) {
+            // Back to the in-app view's size, which a remote client may have
+            // changed while attached (no-op if it did not).
             if (tap != null || pendingUiCols <= 0) return;
-            int c = pendingUiCols, r = pendingUiRows;
-            pendingUiCols = pendingUiRows = 0;
-            applySize(c, r, pendingUiCellW, pendingUiCellH);
+            applySize(pendingUiCols, pendingUiRows, pendingUiCellW, pendingUiCellH);
         }
     }
 
@@ -645,8 +678,13 @@ public final class TerminalSession {
 
     /** Hangs up or terminates the session and releases the PTY. Idempotent. */
     public void close() {
-        if (closed) return;
-        closed = true;
+        // Under sizeLock: a remote client resizes from its own thread, and an
+        // applySize that saw closed == false must finish before masterFd goes
+        // (getFd() on a closed descriptor throws, and would kill the process).
+        synchronized (sizeLock) {
+            if (closed) return;
+            closed = true;
+        }
         if (vm != null) {
             // Detach only. The guest's getty and whatever it is running belong
             // to the machine, not to this tab; closing our dup of the channel
