@@ -150,6 +150,7 @@ public class TerminalUiTest {
                 s.emulator.snapshot(snap);
                 sb.append(" dims=").append(snap.cols).append('x').append(snap.rows);
                 sb.append("\nscreen:[").append(snap.text().trim()).append(']');
+                sb.append(" selection:[").append(s.emulator.selectionText()).append(']');
             }
             sb.append(" newTabShown=").append(
                     viewShown(a.findViewById(R.id.tabs), R.string.tab_new_description));
@@ -586,13 +587,28 @@ public class TerminalUiTest {
             public void perform(UiController uc, View view) {
                 float[] precision = Press.FINGER.describePrecision();
                 float[] p = cellCenterOnScreen(view, cx, cy);
+                // Inject one timestamped gesture sequence. Waiting for Espresso
+                // idle between taps also waits for selection-popup rendering;
+                // on a slow emulator that stretched the third tap past 300ms.
+                // Preserve real pointer injection and the same 30ms taps/60ms gaps.
+                List<MotionEvent> events = new ArrayList<>();
+                long start = android.os.SystemClock.uptimeMillis();
                 for (int i = 0; i < taps; i++) {
-                    MotionEvents.DownResultHolder down =
-                            MotionEvents.sendDown(uc, p, precision);
-                    uc.loopMainThreadForAtLeast(30); // brief, so it reads as a tap
-                    MotionEvents.sendUp(uc, down.down, p);
-                    if (i < taps - 1) uc.loopMainThreadForAtLeast(60); // within window
+                    long when = start + i * 90L;
+                    MotionEvent down = MotionEvent.obtain(when, when, MotionEvent.ACTION_DOWN,
+                            p[0], p[1], 1f, 1f, 0, precision[0], precision[1], 0, 0);
+                    down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                    events.add(down);
+                    events.add(MotionEvents.obtainUpEvent(down, when + 30L, p));
                 }
+                try {
+                    assertTrue("rapid pointer sequence injected", uc.injectMotionEventSequence(events));
+                } catch (androidx.test.espresso.InjectEventSecurityException e) {
+                    throw new AssertionError("cannot inject rapid pointer sequence", e);
+                } finally {
+                    for (MotionEvent event : events) event.recycle();
+                }
+                uc.loopMainThreadUntilIdle();
             }
         };
     }
