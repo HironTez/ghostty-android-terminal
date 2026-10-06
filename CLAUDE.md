@@ -72,13 +72,21 @@ Java  app/src/main/java/io/github/sylirre/terminal/
          SessionCommand (execve command or arm64chroot argv + env + tab label)
          UserlandDistro (bundled rootfs asset discovery for the distro chooser)
          UserlandRootfs (rootfs asset → tar.xz install → arm64chroot command line)
-         SessionManager (process singleton: sessions survive Activity recreation)
+         SessionManager (process singleton: sessions survive Activity recreation;
+         reaps sessions that exit with no Activity listening)
+         SessionService (foreground service; exported, DUMP-guarded headless entry)
+         ProcessPipes (pipe-based spawn for headless exec)
          VmOptions/VmMachine (arm64emu guest machine: one per process, a
          socketpair per guest terminal, tabs attach with a dup)
          ScreenSnapshot (flat viewport arrays for rendering)
   ui/    TerminalView (Canvas grid renderer + TYPE_NULL InputConnection)
          ExtraKeysView, TabStripView, MainActivity
          OnboardingActivity (first-run intro + distro chooser + install)
+         UserlandSetup (install + persisted outcome, settings → UserlandOptions)
+  headless/ HeadlessServer/HeadlessConnection/Frames: ADB control API on an
+         abstract socket, peer-checked; proves itself to gterm by an HMAC
+         under a per-start key only dumpsys reveals (docs/headless-api.md);
+         scripts/gterm is its host client
          Chrome/ChromePalette/TopBarView/EdgeInsets/Dialogs/KeyCaps (shared
          chrome: drawable factories + design tokens, theme-derived main-screen
          palette, secondary-screen top bar + insets, dialog kit, keycap factory)
@@ -128,6 +136,11 @@ thread → `TerminalView` pulls a fresh `ScreenSnapshot` in `onDraw`.
   its text across scroll/output/reflow; `TerminalView` only draws handles at
   the endpoint coordinates the snapshot reports and never stores cell
   positions (docs/architecture.md, "Selection and clipboard").
+- **Sessions don't need an Activity.** `TerminalSession` has one primary
+  listener (the Activity, cleared in `onDestroy`) plus extra listeners and one
+  `OutputTap`; `SessionManager` reaps exits nobody else handles. While a
+  headless client is attached (tap set) the emulator's query replies are
+  suppressed and UI resizes are deferred — don't route either around the tap.
 - **Ghostty C callbacks must be assigned through their typedefs** (see
   `write_pty_fn` etc. in terminal_jni.c). `ghostty_terminal_set` takes
   `void*`, so a signature mismatch compiles silently and SIGSEGVs at
@@ -179,6 +192,8 @@ thread → `TerminalView` pulls a fresh `ScreenSnapshot` in `onDraw`.
   machine under arm64emu — boot to a login on the serial console, a second
   guest terminal on its own channel, control-channel resize, detach; one
   machine per class, and skips itself when no `VmImages/` are bundled),
+  `HeadlessApiTest` (in-process LocalSocket client against the headless
+  server; plain sh, the userland exec case skips without a rootfs),
   `TerminalUiTest`
   (ActivityScenario + Espresso; launches with
   `MainActivity.EXTRA_FORCE_SHELL` so it always tests plain sh and never

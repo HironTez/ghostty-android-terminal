@@ -138,6 +138,17 @@ public final class TerminalNative {
             String cwd, int cols, int rows, int cellWidthPx, int cellHeightPx,
             int[] pidOut) throws java.io.IOException;
 
+    /**
+     * Forks a child on three pipes instead of a PTY (headless exec): execve of
+     * {@code cmd}, or — when {@code cmd} is null — the in-process userland
+     * engine with {@code args} as its argv, exactly like the PTY spawns. The
+     * child leads its own session/process group with no controlling terminal.
+     * fdsOut receives [stdin write end, stdout read end, stderr read end];
+     * pidOut[0] the child pid.
+     */
+    public static native int pipeCreate(String cmd, String[] args, String[] env,
+            String cwd, int[] fdsOut, int[] pidOut) throws java.io.IOException;
+
     public static native void ptySetSize(int fd, int cols, int rows,
             int cellWidthPx, int cellHeightPx);
 

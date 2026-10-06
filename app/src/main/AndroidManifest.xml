@@ -15,6 +15,8 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- One-time prompt to exempt the app from Doze battery optimization. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Opt-in headless autostart (docs/headless-api.md); a no-op unless enabled. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Optional storage bind mounts for userland sessions. -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
@@ -75,16 +77,30 @@
 
         <!-- Holds the process at foreground priority while shells run.
              stopWithTask=false keeps it (and the shells) alive when the
-             task is swiped from Recents. -->
+             task is swiped from Recents. Exported for the headless ADB API
+             (docs/headless-api.md), but only to callers holding DUMP: the adb
+             shell does, ordinary apps cannot. The app's own uid is always
+             allowed by the platform. -->
         <service
             android:name=".term.SessionService"
-            android:exported="false"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
             android:foregroundServiceType="specialUse"
             android:stopWithTask="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps interactive terminal shells and their child processes running while the app is in the background." />
         </service>
+
+        <!-- Starts headless mode after boot, only when opted in (gterm
+             autostart on) and headless mode was on when the phone went down. -->
+        <receiver
+            android:name=".headless.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>
