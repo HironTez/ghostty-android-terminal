@@ -386,6 +386,7 @@
     <!-- Foreground service notification -->
     <string name="notification_channel_name">Running sessions</string>
     <string name="notification_wakelock_active"> · wake lock on</string>
+    <string name="notification_headless_active"> · ADB API on</string>
     <string name="notification_action_exit">Exit</string>
     <string name="notification_action_acquire_wakelock">Acquire wake lock</string>
     <string name="notification_action_release_wakelock">Release wake lock</string>

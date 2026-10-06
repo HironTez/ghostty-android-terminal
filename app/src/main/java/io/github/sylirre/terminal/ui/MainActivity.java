@@ -129,6 +129,34 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
     private String appliedBackgroundPath;
     private int appliedBackgroundBlur = -1;
 
+    /**
+     * Sessions added or removed behind this Activity's back — by the headless
+     * API, or reaped after exiting with no listener. Adopts new ones as tabs
+     * and moves off a current session that is gone.
+     */
+    private final Runnable onSessionsChanged = () -> {
+        if (isFinishing() || isDestroyed()) return;
+        for (TerminalSession s : sessions.sessions()) {
+            if (!s.hasListener()) s.setListener(this);
+        }
+        if (current != null && sessions.indexOf(current) < 0) {
+            List<TerminalSession> remaining = sessions.sessions();
+            TerminalInputFieldView.retainSessions(remaining);
+            if (remaining.isEmpty()) {
+                SessionService.stop(this);
+                finishAndRemoveTask();
+            } else {
+                switchTo(remaining.get(0));
+            }
+            return;
+        }
+        if (current == null && !sessions.isEmpty() && !awaitingOnboarding) {
+            switchTo(sessions.sessions().get(0));
+            return;
+        }
+        updateTabs();
+    };
+
     /** Run by {@link SessionService} when the user taps "Exit" in the notification. */
     private final Runnable onServiceExit = () -> {
         // Sessions are already torn down by the service; just drop the UI.
@@ -291,6 +319,7 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         }
 
         SessionService.setExitListener(onServiceExit);
+        sessions.addChangeListener(onSessionsChanged);
         // Deferred while onboarding runs — the system dialog must not land on
         // top of the wizard's first impression; re-requested when it returns.
         if (!awaitingOnboarding) maybeRequestNotificationsPermission();
@@ -365,6 +394,11 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
     protected void onDestroy() {
         super.onDestroy();
         SessionService.clearExitListener(onServiceExit);
+        sessions.removeChangeListener(onSessionsChanged);
+        // Sessions outlive this Activity. Stop routing their callbacks here, so
+        // one that exits later is reaped by SessionManager (which also updates
+        // or stops the service) rather than by a destroyed Activity's tab code.
+        for (TerminalSession s : sessions.sessions()) s.clearListener(this);
         inputField.release();
         if (bellTone != null) {
             bellTone.release(); // frees the native audio track it holds

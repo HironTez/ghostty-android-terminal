@@ -13,7 +13,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 /**
  * One shell running on a PTY, wired to a {@link TerminalEmulator}.
@@ -22,9 +25,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * emulator's query responses back. Listener callbacks arrive on the main
  * thread; onUpdate is coalesced (at most one pending) so a flood of output
  * can't queue unbounded UI work.
+ *
+ * Besides the one primary {@link Listener} (the Activity, which replaces it on
+ * every recreation), extra listeners can be {@linkplain #addListener added} —
+ * {@link SessionManager}'s reaper is one — and one {@link OutputTap} can be
+ * attached to stream the raw PTY output somewhere else, which is how the
+ * headless API mirrors a session to a remote terminal.
  */
 public final class TerminalSession {
     private static final int SIGKILL = 9;
+    private static final AtomicInteger NEXT_ID = new AtomicInteger(1);
 
     // OSC 9;4 (ConEmu) progress states, as reported by a running program.
     /** No progress / cleared. */
@@ -65,10 +75,37 @@ public final class TerminalSession {
         default void onProgress(TerminalSession session, int state, int value) {}
     }
 
+    /**
+     * A raw-byte mirror of the session's output for one remote client (see
+     * {@link #setTap}). Both callbacks run on session threads, never the main
+     * thread, and may block: a slow tap back-pressures the program, exactly
+     * like a slow terminal would.
+     */
+    public interface OutputTap {
+        /** Bytes the program wrote, before the in-app emulator sees them. */
+        void onOutput(byte[] buf, int len);
+
+        /**
+         * The session ended; {@code exitCode} is the exit status or -signal
+         * (0 for a guest-machine terminal whose channel closed). Called at
+         * most once per session, after the last {@link #onOutput}.
+         */
+        void onEnd(int exitCode);
+    }
+
+    /** Process-unique, stable id (the headless API addresses sessions by it). */
+    public final int id = NEXT_ID.getAndIncrement();
+
     public final TerminalEmulator emulator;
     // Volatile, not final: the Activity that listens is recreated on config
     // changes while sessions live on in SessionManager.
     private volatile Listener listener;
+    private final CopyOnWriteArrayList<Listener> extraListeners = new CopyOnWriteArrayList<>();
+    private volatile OutputTap tap;
+    // Fires the tap's onEnd exactly once; endCode is what it reported.
+    private final AtomicBoolean ended = new AtomicBoolean();
+    private volatile int endCode;
+    private Thread readerThread;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicBoolean updatePending = new AtomicBoolean();
 
@@ -76,6 +113,11 @@ public final class TerminalSession {
     private final ParcelFileDescriptor masterFd;
     private final OutputStream toPty;
     private int lastCols, lastRows;
+    private int lastCellW, lastCellH;
+    // The size the UI asked for while a tap held the size (0 = none pending);
+    // applied when the tap detaches. Guarded by sizeLock, like lastCols/Rows.
+    private int pendingUiCols, pendingUiRows, pendingUiCellW, pendingUiCellH;
+    private final Object sizeLock = new Object();
     private volatile boolean closed;
     private volatile String title;
     private volatile Integer exitCode;
@@ -91,28 +133,19 @@ public final class TerminalSession {
     private final OscSideScanner oscScanner = new OscSideScanner(new OscSideScanner.OscSink() {
         @Override
         public void onClipboardWrite(String sel, byte[] data) {
-            mainHandler.post(() -> {
-                Listener l = listener;
-                if (l != null) l.onClipboardWrite(TerminalSession.this, sel, data);
-            });
+            post(l -> l.onClipboardWrite(TerminalSession.this, sel, data));
         }
 
         @Override
         public void onClipboardQuery(String sel) {
-            mainHandler.post(() -> {
-                Listener l = listener;
-                if (l != null) l.onClipboardQuery(TerminalSession.this, sel);
-            });
+            post(l -> l.onClipboardQuery(TerminalSession.this, sel));
         }
 
         @Override
         public void onProgress(int state, int value) {
             progressState = state;
             progressValue = value;
-            mainHandler.post(() -> {
-                Listener l = listener;
-                if (l != null) l.onProgress(TerminalSession.this, state, value);
-            });
+            post(l -> l.onProgress(TerminalSession.this, state, value));
         }
     });
 
@@ -154,7 +187,20 @@ public final class TerminalSession {
             int scrollbackLines, SessionCommand command,
             boolean terminateProcessesOnExit, Listener listener)
             throws IOException {
+        this(cols, rows, cellWidthPx, cellHeightPx, scrollbackLines, command,
+                terminateProcessesOnExit, listener, null);
+    }
+
+    /**
+     * As above, with {@code tap} attached before the child can print anything,
+     * so a remote client that spawned the session sees its very first prompt.
+     */
+    public TerminalSession(int cols, int rows, int cellWidthPx, int cellHeightPx,
+            int scrollbackLines, SessionCommand command,
+            boolean terminateProcessesOnExit, Listener listener, OutputTap tap)
+            throws IOException {
         this.listener = listener;
+        this.tap = tap;
         this.label = command.label;
         this.userland = command.userland;
         this.vm = null;
@@ -180,12 +226,15 @@ public final class TerminalSession {
         }
         lastCols = cols;
         lastRows = rows;
+        lastCellW = cellWidthPx;
+        lastCellH = cellHeightPx;
         this.pid = pidOut[0];
         this.masterFd = ParcelFileDescriptor.adoptFd(fd);
         this.toPty = new FileOutputStream(masterFd.getFileDescriptor());
 
         Thread reader = new Thread(this::readLoop, "pty-reader-" + pid);
         reader.setDaemon(true);
+        readerThread = reader;
         reader.start();
         Thread waiter = new Thread(this::waitLoop, "pty-waiter-" + pid);
         waiter.setDaemon(true);
@@ -204,7 +253,16 @@ public final class TerminalSession {
     public TerminalSession(int cols, int rows, int cellWidthPx, int cellHeightPx,
             int scrollbackLines, VmMachine machine, int terminal,
             Listener listener) throws IOException {
+        this(cols, rows, cellWidthPx, cellHeightPx, scrollbackLines, machine,
+                terminal, listener, null);
+    }
+
+    /** As above, with {@code tap} attached before the first byte is read. */
+    public TerminalSession(int cols, int rows, int cellWidthPx, int cellHeightPx,
+            int scrollbackLines, VmMachine machine, int terminal,
+            Listener listener, OutputTap tap) throws IOException {
         this.listener = listener;
+        this.tap = tap;
         this.label = machine.terminalName(terminal);
         this.userland = false;
         this.vm = machine;
@@ -224,10 +282,13 @@ public final class TerminalSession {
         this.toPty = new FileOutputStream(masterFd.getFileDescriptor());
         lastCols = cols;
         lastRows = rows;
+        lastCellW = cellWidthPx;
+        lastCellH = cellHeightPx;
         machine.setWinsize(terminal, cols, rows);
 
         Thread reader = new Thread(this::readLoop, "vm-reader-" + label);
         reader.setDaemon(true);
+        readerThread = reader;
         reader.start();
         // No waiter: the machine reports its own exit, and this session ends
         // when its channel does.
@@ -239,11 +300,23 @@ public final class TerminalSession {
             int n;
             while ((n = in.read(buf)) >= 0) {
                 if (n == 0) continue;
+                OutputTap t = tap;
+                if (t != null) {
+                    try {
+                        t.onOutput(buf, n);
+                    } catch (RuntimeException e) {
+                        // A broken tap must not take the session down with it.
+                        clearTap(t);
+                    }
+                }
                 // Passive tap for OSC 52 / OSC 9;4 before the engine sees the
                 // bytes; it reads, never mutates, so ordering doesn't matter.
                 oscScanner.scan(buf, n);
                 byte[] response = emulator.feed(buf, n);
-                if (response != null) writeRaw(response); // protocol reply, not user input
+                // Protocol reply, not user input. While a remote terminal is
+                // attached it answers DA/DSR/... itself, and a second answer
+                // from here would arrive on the program's stdin as garbage.
+                if (response != null && tap == null) writeRaw(response);
                 dispatchEvents();
             }
         } catch (IOException ignored) {
@@ -257,48 +330,134 @@ public final class TerminalSession {
         // close() having run means the machine went away underneath the tab,
         // which the listener has to hear about — a user-closed tab is already
         // being torn down and must not be reported twice.
-        if (vm != null && !closed) {
-            exitCode = 0;
-            mainHandler.post(() -> {
-                Listener l = listener;
-                if (l != null) l.onExited(this, 0);
-            });
+        if (vm != null) {
+            if (!closed) {
+                exitCode = 0;
+                post(l -> l.onExited(this, 0));
+            }
+            endTap(0);
         }
     }
 
+    /** Sets the primary listener (the Activity), replacing any previous one. */
     public void setListener(Listener l) {
         listener = l;
+    }
+
+    /**
+     * Clears the primary listener if it is still {@code l}, so a destroyed
+     * Activity stops receiving callbacks without dropping a newer one's.
+     */
+    public void clearListener(Listener l) {
+        if (listener == l) listener = null;
+    }
+
+    /** Whether a primary listener (normally a live Activity) is set. */
+    public boolean hasListener() {
+        return listener != null;
+    }
+
+    /**
+     * Adds a listener next to the primary one. Extra listeners hear every
+     * callback after the primary listener, and {@link #setListener} never
+     * replaces them.
+     */
+    public void addListener(Listener l) {
+        extraListeners.addIfAbsent(l);
+    }
+
+    public void removeListener(Listener l) {
+        extraListeners.remove(l);
+    }
+
+    /** Runs {@code call} on the main thread for the primary, then every extra listener. */
+    private void post(Consumer<Listener> call) {
+        mainHandler.post(() -> {
+            Listener l = listener;
+            if (l != null) call.accept(l);
+            for (Listener x : extraListeners) call.accept(x);
+        });
+    }
+
+    // --- output tap -----------------------------------------------------------
+
+    /**
+     * Attaches {@code t} as the session's one output tap (null detaches) and
+     * returns the tap it replaced. While a tap is attached:
+     * <ul>
+     * <li>terminal-query replies from the in-app emulator are suppressed — the
+     *     remote terminal answers them;</li>
+     * <li>{@link #resize} from the UI is deferred, and only
+     *     {@link #resizeExternal} changes the size; a deferred UI size is
+     *     applied when the tap detaches.</li>
+     * </ul>
+     * Attaching to a session that already ended reports the end at once.
+     */
+    public OutputTap setTap(OutputTap t) {
+        OutputTap prev;
+        synchronized (sizeLock) {
+            prev = tap;
+            tap = t;
+        }
+        if (t == null) applyPendingUiSize();
+        else if (ended.get()) t.onEnd(endCode);
+        return prev;
+    }
+
+    /** Detaches {@code t} if it is still the attached tap; true if it was. */
+    public boolean clearTap(OutputTap t) {
+        synchronized (sizeLock) {
+            if (tap != t || t == null) return false;
+            tap = null;
+        }
+        applyPendingUiSize();
+        return true;
+    }
+
+    /** The attached tap, or null. */
+    public OutputTap tap() {
+        return tap;
+    }
+
+    private void endTap(int code) {
+        if (!ended.compareAndSet(false, true)) return;
+        endCode = code;
+        OutputTap t = tap;
+        if (t != null) t.onEnd(code);
     }
 
     private void waitLoop() {
         int code = TerminalNative.processWaitFor(pid);
         exitCode = code;
-        mainHandler.post(() -> {
-            Listener l = listener;
-            if (l != null) l.onExited(this, code);
-        });
+        post(l -> l.onExited(this, code));
+        // Let the reader drain what the child wrote before it exited, so a tap
+        // sees all the output before the end. Bounded: a background process
+        // that inherited the tty can hold it open indefinitely.
+        Thread reader = readerThread;
+        if (reader != null) {
+            try {
+                reader.join(1500);
+            } catch (InterruptedException ignored) {
+            }
+        }
+        endTap(code);
     }
 
     private void dispatchEvents() {
         int events = emulator.events();
         if ((events & TerminalNative.EVENT_TITLE) != 0) {
             title = emulator.title();
-            mainHandler.post(() -> {
-                Listener l = listener;
-                if (l != null) l.onTitleChanged(this);
-            });
+            post(l -> l.onTitleChanged(this));
         }
         if ((events & TerminalNative.EVENT_BELL) != 0) {
-            mainHandler.post(() -> {
-                Listener l = listener;
-                if (l != null) l.onBell(this);
-            });
+            post(l -> l.onBell(this));
         }
         if (updatePending.compareAndSet(false, true)) {
             mainHandler.post(() -> {
                 updatePending.set(false);
                 Listener l = listener;
                 if (l != null) l.onUpdate(this);
+                for (Listener x : extraListeners) x.onUpdate(this);
             });
         }
     }
@@ -349,6 +508,7 @@ public final class TerminalSession {
      * count as user interaction.
      */
     public void sendClipboardResponse(byte[] data) {
+        if (tap != null) return; // the attached remote terminal owns the clipboard
         writeRaw(data);
     }
 
@@ -397,23 +557,76 @@ public final class TerminalSession {
         }
     }
 
+    /**
+     * Resize requested by the in-app view. Deferred while an {@link OutputTap}
+     * is attached: the remote terminal owns the size then, and the phone's grid
+     * must not SIGWINCH a program someone is using over ADB.
+     */
     public void resize(int cols, int rows, int cellWidthPx, int cellHeightPx) {
+        synchronized (sizeLock) {
+            if (tap != null) {
+                pendingUiCols = cols;
+                pendingUiRows = rows;
+                pendingUiCellW = cellWidthPx;
+                pendingUiCellH = cellHeightPx;
+                return;
+            }
+            applySize(cols, rows, cellWidthPx, cellHeightPx);
+        }
+    }
+
+    /**
+     * Resize requested by an attached remote client: applies regardless of the
+     * tap, keeping the last known cell pixel size.
+     */
+    public void resizeExternal(int cols, int rows) {
+        synchronized (sizeLock) {
+            applySize(cols, rows, lastCellW, lastCellH);
+        }
+    }
+
+    /** Current grid width in columns. */
+    public int cols() {
+        synchronized (sizeLock) {
+            return lastCols;
+        }
+    }
+
+    /** Current grid height in rows. */
+    public int rows() {
+        synchronized (sizeLock) {
+            return lastRows;
+        }
+    }
+
+    private void applyPendingUiSize() {
+        synchronized (sizeLock) {
+            if (tap != null || pendingUiCols <= 0) return;
+            int c = pendingUiCols, r = pendingUiRows;
+            pendingUiCols = pendingUiRows = 0;
+            applySize(c, r, pendingUiCellW, pendingUiCellH);
+        }
+    }
+
+    private void applySize(int cols, int rows, int cellWidthPx, int cellHeightPx) {
         if (closed || cols <= 0 || rows <= 0) return;
+        if (cellWidthPx > 0) lastCellW = cellWidthPx;
+        if (cellHeightPx > 0) lastCellH = cellHeightPx;
         // Skip no-op resizes: a spurious SIGWINCH makes mksh wipe its
         // current prompt line without reprinting it (observed on Android's
         // /system/bin/sh), leaving the screen blank.
         if (cols == lastCols && rows == lastRows) return;
         lastCols = cols;
         lastRows = rows;
-        emulator.resize(cols, rows, cellWidthPx, cellHeightPx);
+        emulator.resize(cols, rows, lastCellW, lastCellH);
         if (vm != null) {
             // A socketpair carries no winsize, so the guest is told over the
             // machine's control channel instead of by ioctl on this end.
             vm.setWinsize(vmTerminal, cols, rows);
             return;
         }
-        TerminalNative.ptySetSize(masterFd.getFd(), cols, rows, cellWidthPx,
-                cellHeightPx);
+        TerminalNative.ptySetSize(masterFd.getFd(), cols, rows, lastCellW,
+                lastCellH);
     }
 
     /** True for a session attached to a guest machine's terminal. */
