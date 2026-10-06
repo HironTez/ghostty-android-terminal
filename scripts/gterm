@@ -225,7 +225,12 @@ def interactive(req):
     def on_winch(signum, frame):
         os.write(wfd, b"w")
 
+    def on_term(signum, frame):
+        raise SystemExit(128 + signum)  # unwinds through the tty restore below
+
     signal.signal(signal.SIGWINCH, on_winch)
+    for s in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, on_term)
     code = None
     detached = False
     try:
@@ -273,10 +278,15 @@ def interactive(req):
                 if got is None:
                     break
                 pending = got
+    except OSError:
+        code = None  # connection reset: reported below like a close
     finally:
+        signal.signal(signal.SIGWINCH, signal.SIG_DFL)
         if saved is not None:
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, saved)
         conn.sock.close()
+        os.close(rfd)
+        os.close(wfd)
     if detached:
         sys.stderr.write("\n[gterm: detached from session %s; `gterm attach %s` resumes]\n" % (sid, sid))
         return 0
@@ -404,9 +414,14 @@ def cmd_exec(a):
     conn = Conn()
     conn.request(req)
 
+    # The handler only queues the signal; the loop sends it. Sending from the
+    # handler could land a SIGNAL frame inside a half-sent DATA frame.
+    sig_r, sig_w = os.pipe()
+    os.set_blocking(sig_w, False)
+
     def forward_signal(signum, frame):
         try:
-            conn.send(SIGNAL, bytes([signum]))
+            os.write(sig_w, bytes([signum]))
         except OSError:
             pass
 
@@ -419,11 +434,11 @@ def cmd_exec(a):
     code = None
     out, err = sys.stdout.fileno(), sys.stderr.fileno()
     while code is None:
-        fds = [conn.sock] + ([sys.stdin] if stdin_open else [])
-        try:
-            ready, _, _ = select.select(fds, [], [])
-        except InterruptedError:
-            continue
+        fds = [conn.sock, sig_r] + ([sys.stdin] if stdin_open else [])
+        ready, _, _ = select.select(fds, [], [])
+        if sig_r in ready:
+            for signum in os.read(sig_r, 64):
+                conn.send(SIGNAL, bytes([signum]))
         if sys.stdin in ready:
             data = os.read(sys.stdin.fileno(), 65536)
             if data:
@@ -575,3 +590,7 @@ if __name__ == "__main__":
         sys.exit(main())
     except BrokenPipeError:
         sys.exit(141)
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except OSError as e:  # connection reset and the like: gterm's failure
+        die("connection lost: %s" % e)
