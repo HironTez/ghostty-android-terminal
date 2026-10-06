@@ -68,7 +68,10 @@ def die(msg, code=255):
 def adb(*args, check=True, capture=False):
     cmd = [os.environ.get("ADB", "adb")] + list(args)
     try:
-        return subprocess.run(cmd, check=check, stdout=subprocess.PIPE if capture else None,
+        # stdin from /dev/null: `adb shell` would otherwise swallow the input
+        # meant for the remote command (gterm exec < file).
+        return subprocess.run(cmd, check=check, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE if capture else None,
                               universal_newlines=True)
     except FileNotFoundError:
         die("adb not found (set ADB=/path/to/adb)")
