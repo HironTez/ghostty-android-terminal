@@ -177,7 +177,8 @@ def interactive(req):
     detached = False
     try:
         if tty:
-            ttymod.setraw(sys.stdin.fileno())
+            # TCSANOW, not setraw's default TCSAFLUSH: keep typeahead.
+            ttymod.setraw(sys.stdin.fileno(), termios.TCSANOW)
         # Frames that arrived along with the response line.
         pending = []
         while len(conn.buf) >= 5:
@@ -325,7 +326,7 @@ def cmd_exec(a):
     env = parse_env(a.env)
     if env:
         req["env"] = env
-    if a.argv:
+    if a.exact_argv:
         req["argv"] = a.command
     else:
         # ssh semantics: the words are joined and run by the target's sh.
@@ -471,7 +472,8 @@ def main():
     s.add_argument("--type", choices=["userland", "shell"])
     s.add_argument("--cwd")
     s.add_argument("-e", "--env", action="append", metavar="NAME=VALUE")
-    s.add_argument("--argv", action="store_true", help="exact argv instead of a sh command line")
+    s.add_argument("--argv", dest="exact_argv", action="store_true",
+                   help="exact argv instead of a sh command line")
     s.add_argument("-n", "--no-stdin", action="store_true", help="send EOF at once")
     s.add_argument("command", nargs=argparse.REMAINDER)
     s.set_defaults(fn=cmd_exec)

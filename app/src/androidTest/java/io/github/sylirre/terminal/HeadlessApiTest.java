@@ -163,6 +163,13 @@ public class HeadlessApiTest {
         }
     }
 
+    /** A detached session's prompt, read off its in-app emulator. */
+    private static void waitForPrompt(int id) {
+        TerminalSession s = SessionManager.get().byId(id);
+        assertNotNull(s);
+        waitFor("prompt", TIMEOUT_MS, () -> screen(s).contains("$"), () -> screen(s));
+    }
+
     // --- control ops ----------------------------------------------------------
 
     @Test
@@ -211,6 +218,8 @@ public class HeadlessApiTest {
             assertTrue(r.toString(), r.getBoolean("ok"));
             int id = r.getInt("id");
             assertEquals("shell", r.getString("type"));
+            // mksh drops typeahead when its line editor starts: wait for the prompt.
+            c.pumpUntilData("$ ");
 
             c.type("echo hl-$((6*7)); stty size\n");
             c.pumpUntilData("hl-42");
@@ -239,6 +248,7 @@ public class HeadlessApiTest {
         assertTrue(r.toString(), r.getBoolean("ok"));
         int id = r.getInt("id");
         assertFalse(findSession(id).getBoolean("attached"));
+        waitForPrompt(id);
 
         try (Client a = new Client()) {
             JSONObject ar = a.request(req("attach").put("id", id).put("cols", 81).put("rows", 22));
@@ -257,6 +267,7 @@ public class HeadlessApiTest {
     @Test
     public void secondAttachStealsTheFirst() throws Exception {
         int id = call(req("spawn").put("type", "shell").put("attach", false)).getInt("id");
+        waitForPrompt(id);
         try (Client first = new Client(); Client second = new Client()) {
             assertTrue(first.request(req("attach").put("id", id)).getBoolean("ok"));
             assertTrue(second.request(req("attach").put("id", id)).getBoolean("ok"));
@@ -318,6 +329,9 @@ public class HeadlessApiTest {
             assertTrue(c.request(req("exec").put("type", "shell")
                     .put("cmd", "echo ready; sleep 30")).getBoolean("ok"));
             c.pumpUntilData("ready");
+            // Let sh reach the fork of sleep: a SIGINT that lands between the
+            // echo and the fork is held by sh until sleep finishes on its own.
+            Thread.sleep(500);
             c.send(Frames.SIGNAL, new byte[] {2}); // SIGINT
             int code = c.pumpUntilExit();
             assertTrue("exit " + code, code == -2 || code == 130);
@@ -348,6 +362,10 @@ public class HeadlessApiTest {
         return snap.text();
     }
 
+    /** The probe's output (its echoed command line reads len[${#reply}]). */
+    private static final java.util.regex.Pattern LEN =
+            java.util.regex.Pattern.compile("len\\[\\d+\\]");
+
     private static final TerminalSession.OutputTap NULL_TAP = new TerminalSession.OutputTap() {
         @Override public void onOutput(byte[] buf, int len) {}
         @Override public void onEnd(int exitCode) {}
@@ -360,22 +378,26 @@ public class HeadlessApiTest {
                 c.getCacheDir().getAbsolutePath());
         TerminalSession s = new TerminalSession(80, 24, 8, 16, 1000, cmd, false, null, NULL_TAP);
         try {
-            // Ask for a cursor report, then count what arrives on stdin within 2 s.
-            String probe = "stty -icanon min 0 time 20; printf '\\033[6n';"
-                    + " n=$(dd bs=64 count=1 2>/dev/null | wc -c); stty sane;"
-                    + " echo \"cnt[$((n))]\"\n";
+            // Ask for a cursor report and read a line: whatever arrived on stdin
+            // in the meantime is the reply. The sleep proves an absence, which no
+            // condition can poll for; the newline then ends the read either way.
+            String probe = "printf '\\033[6n'; read -r reply; echo \"len[${#reply}]\"\n";
             s.write(probe);
-            waitFor("tapped probe", TIMEOUT_MS, () -> screen(s).contains("cnt["),
+            Thread.sleep(1000);
+            s.write("\n");
+            waitFor("tapped probe", TIMEOUT_MS, () -> LEN.matcher(screen(s)).find(),
                     () -> screen(s));
-            assertTrue(screen(s), screen(s).contains("cnt[0]"));
+            assertTrue(screen(s), screen(s).contains("len[0]"));
 
             s.setTap(null);
             s.write("clear\n");
-            waitFor("cleared", TIMEOUT_MS, () -> !screen(s).contains("cnt[0]"), () -> screen(s));
+            waitFor("cleared", TIMEOUT_MS, () -> !screen(s).contains("len[0]"), () -> screen(s));
             s.write(probe);
-            waitFor("untapped probe", TIMEOUT_MS, () -> screen(s).contains("cnt["),
+            Thread.sleep(1000);
+            s.write("\n");
+            waitFor("untapped probe", TIMEOUT_MS, () -> LEN.matcher(screen(s)).find(),
                     () -> screen(s));
-            assertFalse(screen(s), screen(s).contains("cnt[0]"));
+            assertFalse(screen(s), screen(s).contains("len[0]"));
         } finally {
             s.close();
         }
