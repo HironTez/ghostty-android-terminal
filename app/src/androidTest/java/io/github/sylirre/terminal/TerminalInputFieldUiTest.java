@@ -42,6 +42,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.io.File;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -57,6 +58,11 @@ import io.github.sylirre.terminal.ui.TerminalView;
 @RunWith(AndroidJUnit4.class)
 public class TerminalInputFieldUiTest {
     private static final long TIMEOUT_MS = 15_000;
+    /**
+     * How long a command must stay unexecuted to count as "not run". An idle
+     * shell given a complete line runs a builtin-plus-touch in milliseconds.
+     */
+    private static final long NOT_EXECUTED_WINDOW_MS = 3_000;
     private ActivityScenario<MainActivity> scenario;
     private AppSettings settings;
     private boolean oldEnabled, oldCaps, oldExtraKeys, oldTouch, oldRich;
@@ -206,37 +212,86 @@ public class TerminalInputFieldUiTest {
         });
     }
 
+    /** Joined screen text with all whitespace removed: immune to soft wraps. */
+    private String unwrappedScreen() {
+        return screen().replaceAll("\\s+", "");
+    }
+
+    /**
+     * Asserts {@code condition} stays false for the whole bounded window,
+     * polling like {@link TestUtil#waitFor} so a late effect is still caught.
+     */
+    private void assertNeverWithin(String what, long windowMs,
+            java.util.function.BooleanSupplier condition) {
+        long deadline = System.currentTimeMillis() + windowMs;
+        while (System.currentTimeMillis() < deadline) {
+            assertFalse(what + "\n" + screen(), condition.getAsBoolean());
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                throw new AssertionError("interrupted", e);
+            }
+        }
+        assertFalse(what + "\n" + screen(), condition.getAsBoolean());
+    }
+
     @Test
     public void sendTransfersTextWithoutAddingEnterAndRunExecutesExplicitly() {
-        openField();
-        scenario.onActivity(a -> editor(a).setText("echo field_send"));
-        onView(withContentDescription(TerminalInputFieldView.SEND_DESCRIPTION)).perform(click());
-        scenario.onActivity(a -> {
-            assertTrue(current(a).userInteracted());
-            assertEquals("", editor(a).getText().toString());
-        });
-        assertFalse("Send must not execute the command", outputLine("field_send"));
-        scenario.onActivity(a -> ((TerminalView) a.findViewById(R.id.terminal))
-                .dispatchKey(KeyEvent.KEYCODE_ENTER));
-        waitFor("Send waits for separate Enter", TIMEOUT_MS,
-                () -> outputLine("field_send"), this::screen);
+        // Each command leaves a unique marker file and prints a line that its
+        // own (echoed, possibly soft-wrapped) text never contains: "$((6*7))"
+        // expands to 42 only when the shell executes it. Both are therefore
+        // proof of execution independent of screen width.
+        String id = Long.toString(System.nanoTime(), 36);
+        File dir = ApplicationProvider.getApplicationContext().getFilesDir();
+        File sendMarker = new File(dir, "field-send-" + id);
+        File runMarker = new File(dir, "field-run-" + id);
+        String sendOutput = "sent_42_" + id;
+        String runOutput = "ran_42_" + id;
+        try {
+            openField();
+            scenario.onActivity(a -> editor(a).setText("touch " + sendMarker.getAbsolutePath()
+                    + " && echo sent_$((6*7))_" + id));
+            onView(withContentDescription(TerminalInputFieldView.SEND_DESCRIPTION)).perform(click());
+            scenario.onActivity(a -> {
+                assertTrue(current(a).userInteracted());
+                assertEquals("", editor(a).getText().toString());
+            });
+            // The shell has received the text: it echoes it on its edit line.
+            waitFor("Send transferred the command text", TIMEOUT_MS,
+                    () -> unwrappedScreen().contains("sent_$((6*7))_" + id), this::screen);
+            assertNeverWithin("Send must not execute the command", NOT_EXECUTED_WINDOW_MS,
+                    () -> sendMarker.exists() || outputLine(sendOutput));
+            // Positive control: the very same line runs on a separate Enter,
+            // so the absence above was not a broken or slow command.
+            scenario.onActivity(a -> ((TerminalView) a.findViewById(R.id.terminal))
+                    .dispatchKey(KeyEvent.KEYCODE_ENTER));
+            waitFor("Send waits for separate Enter", TIMEOUT_MS,
+                    () -> sendMarker.exists() && outputLine(sendOutput), this::screen);
 
-        scenario.onActivity(a -> {
-            EditText edit = editor(a);
-            InputConnection ic = edit.onCreateInputConnection(new EditorInfo());
-            ic.setComposingText("echo field_run", 1);
-            assertTrue(BaseInputConnection.getComposingSpanStart(edit.getText()) >= 0);
-        });
-        onView(withContentDescription(TerminalInputFieldView.RUN_DESCRIPTION)).perform(click());
-        waitFor("explicit Run output", TIMEOUT_MS,
-                () -> outputLine("field_run"), this::screen);
-        scenario.onActivity(a -> {
-            assertEquals("", editor(a).getText().toString());
-            assertEquals(-1, BaseInputConnection.getComposingSpanStart(editor(a).getText()));
-            // Empty Run must not repeat the previous command or send Enter.
-            assertTrue(described(a.findViewById(R.id.root),
-                    TerminalInputFieldView.RUN_DESCRIPTION).performClick());
-        });
+            scenario.onActivity(a -> {
+                EditText edit = editor(a);
+                InputConnection ic = edit.onCreateInputConnection(new EditorInfo());
+                ic.setComposingText("touch " + runMarker.getAbsolutePath()
+                        + " && echo ran_$((6*7))_" + id, 1);
+                assertTrue(BaseInputConnection.getComposingSpanStart(edit.getText()) >= 0);
+            });
+            onView(withContentDescription(TerminalInputFieldView.RUN_DESCRIPTION)).perform(click());
+            waitFor("explicit Run output", TIMEOUT_MS,
+                    () -> runMarker.exists() && outputLine(runOutput), this::screen);
+            assertTrue("Run marker removable", runMarker.delete());
+            scenario.onActivity(a -> {
+                assertEquals("", editor(a).getText().toString());
+                assertEquals(-1, BaseInputConnection.getComposingSpanStart(editor(a).getText()));
+                // Empty Run must not repeat the previous command or send Enter.
+                assertTrue(described(a.findViewById(R.id.root),
+                        TerminalInputFieldView.RUN_DESCRIPTION).performClick());
+            });
+            assertNeverWithin("empty Run must not re-run the previous command",
+                    NOT_EXECUTED_WINDOW_MS, runMarker::exists);
+        } finally {
+            sendMarker.delete();
+            runMarker.delete();
+        }
     }
 
     @Test
@@ -244,7 +299,9 @@ public class TerminalInputFieldUiTest {
         openField();
         scenario.onActivity(a -> {
             TerminalView terminal = a.findViewById(R.id.terminal);
-            terminal.dispatchText("echo ");
+            // The command text never contains the expected output line, so a
+            // soft-wrapped echo of it cannot be mistaken for the result.
+            terminal.dispatchText("printf 'sticky_%s\\n' ");
             TerminalView.StickyModifiers modifiers = new TerminalView.StickyModifiers();
             modifiers.ctrl = true;
             terminal.setStickyModifiers(modifiers);
@@ -252,19 +309,22 @@ public class TerminalInputFieldUiTest {
         });
         onView(withContentDescription(TerminalInputFieldView.RUN_DESCRIPTION)).perform(click());
         waitFor("draft is literal x, not Ctrl-X or Ctrl-Enter", TIMEOUT_MS,
-                () -> outputLine("x"), this::screen);
+                () -> outputLine("sticky_x"), this::screen);
     }
 
     @Test
     public void unicodeMultilineDraftIsTransferredOnlyOnExplicitRun() {
         openField();
         scenario.onActivity(a -> {
-            editor(a).setText("echo café\necho 雪");
+            // $((6*7)) expands only on execution: the output lines never
+            // appear in the (possibly soft-wrapped) command echo. The wide 雪
+            // goes last: rowText renders its spacer cell as a blank.
+            editor(a).setText("echo café_$((6*7))\necho $((6*7))_雪");
             assertFalse(current(a).userInteracted());
         });
         onView(withContentDescription(TerminalInputFieldView.RUN_DESCRIPTION)).perform(click());
         waitFor("both multiline Unicode outputs", TIMEOUT_MS,
-                () -> outputLine("café") && outputLine("雪"), this::screen);
+                () -> outputLine("café_42") && outputLine("42_雪"), this::screen);
     }
 
     @Test
