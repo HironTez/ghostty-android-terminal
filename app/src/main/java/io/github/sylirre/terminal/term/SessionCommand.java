@@ -4,8 +4,10 @@
 package io.github.sylirre.terminal.term;
 
 import android.content.Context;
+import android.util.Log;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 
 /**
  * What a {@link TerminalSession} spawns: either a command to execve() or an
@@ -13,6 +15,8 @@ import java.io.IOException;
  * Built by {@link #androidShell} or {@link UserlandRootfs#command}.
  */
 public final class SessionCommand {
+
+    private static final String TAG = "SessionCommand";
 
     /** execve() path; null means "enter arm64chroot_main() with argv". */
     public final String cmd;
@@ -46,14 +50,22 @@ public final class SessionCommand {
      * started in {@code cwd} (null: the files directory). The headless API's
      * Android-shell spawn and exec. Every Android-shell caller goes through
      * this Context factory so the bundled tools are always prepared and on PATH.
+     * If preparing them fails (android-bin clobbered, disk full, a missing
+     * tool) the shell still opens with the system toolbox alone: this is the
+     * app's last-resort session and must not depend on the bundle.
      */
     public static SessionCommand androidShell(Context context,
             String[] shArgs, String[] extraEnv, String cwd) throws IOException {
         String homeDir = context.getFilesDir().getAbsolutePath();
         String tmpDir = context.getCacheDir().getAbsolutePath();
-        String bin = AndroidShellTools.prepare(context).getAbsolutePath();
+        String path = "/system/bin";
+        try {
+            path = AndroidShellTools.prepare(context).getAbsolutePath() + ":" + path;
+        } catch (IOException e) {
+            Log.w(TAG, "Bundled Android tools unavailable; PATH=" + path, e);
+        }
         String[] base = {
-                "PATH=" + bin + ":/system/bin",
+                "PATH=" + path,
                 "SHELL=/system/bin/sh",
                 "HOME=" + homeDir,
                 "TMPDIR=" + tmpDir,
@@ -63,7 +75,7 @@ public final class SessionCommand {
                 "ANDROID_DATA=/data",
         };
         // A caller's NAME=value replaces the default of the same name.
-        java.util.LinkedHashMap<String, String> merged = new java.util.LinkedHashMap<>();
+        LinkedHashMap<String, String> merged = new LinkedHashMap<>();
         for (String kv : base) merged.put(kv.substring(0, kv.indexOf('=')), kv);
         for (String kv : extraEnv) {
             int eq = kv.indexOf('=');

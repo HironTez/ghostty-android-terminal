@@ -6,6 +6,7 @@ package io.github.sylirre.terminal;
 import static io.github.sylirre.terminal.TestUtil.waitFor;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -19,11 +20,16 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
 
+import io.github.sylirre.terminal.term.AndroidShellTools;
 import io.github.sylirre.terminal.term.ScreenSnapshot;
 import io.github.sylirre.terminal.term.TerminalSession;
 
@@ -62,15 +68,19 @@ public class ShellSessionTest {
         session.close();
     }
 
-    private String screen() {
+    private static String screen(TerminalSession s) {
         ScreenSnapshot snap = new ScreenSnapshot();
-        session.emulator.snapshot(snap);
+        s.emulator.snapshot(snap);
         return snap.text();
+    }
+
+    private String screen() {
+        return screen(session);
     }
 
     private void waitForOnScreen(String needle) {
         waitFor("\"" + needle + "\" on screen", TIMEOUT_MS,
-                () -> screen().contains(needle));
+                () -> screen().contains(needle), this::screen);
     }
 
     @Test
@@ -82,8 +92,40 @@ public class ShellSessionTest {
 
     @Test
     public void pathContainsBundledToolsAndSystemBin() {
+        // The whole PATH, anchored to this app's files directory. Match the
+        // app-id suffix rather than getFilesDir() verbatim (/data/data vs.
+        // /data/user/0).
+        Pattern path = Pattern.compile("PATH=\\[/\\S*/io\\.github\\.sylirre\\.terminal"
+                + "/files/android-bin:/system/bin\\]");
         session.write("echo \"PATH=[$PATH]\"\n");
-        waitForOnScreen("/files/android-bin:/system/bin]");
+        waitFor("bundled tools then /system/bin on PATH", TIMEOUT_MS,
+                () -> path.matcher(screen()).find(), this::screen);
+    }
+
+    @Test
+    public void shellOpensWhenBundledToolsCannotBePrepared() throws IOException {
+        // The plain shell is the app's last-resort session: a clobbered
+        // android-bin must cost the bundled tools, never the shell itself.
+        Context ctx = ApplicationProvider.getApplicationContext();
+        File bin = new File(ctx.getFilesDir(), "android-bin");
+        File saved = new File(ctx.getFilesDir(), "android-bin.test-" + UUID.randomUUID());
+        assertTrue("move android-bin aside", !bin.exists() || bin.renameTo(saved));
+        TerminalSession fallback = null;
+        try {
+            new FileOutputStream(bin).close(); // a regular file where the dir belongs
+            fallback = new TerminalSession(80, 24, 8, 16, 10_000, ctx, listener);
+            TerminalSession s = fallback;
+            waitFor("prompt", TIMEOUT_MS, () -> screen(s).contains("$"), () -> screen(s));
+            s.write("echo \"PATH=[$PATH]\"\n");
+            waitFor("system-only PATH", TIMEOUT_MS,
+                    () -> screen(s).contains("PATH=[/system/bin]"), () -> screen(s));
+        } finally {
+            if (fallback != null) fallback.close();
+            assertTrue("remove the stand-in file", bin.delete() || !bin.exists());
+            if (saved.exists()) assertTrue("restore android-bin", saved.renameTo(bin));
+            AndroidShellTools.prepare(ctx);
+        }
+        assertFalse("android-bin restored as a directory", bin.isFile());
     }
 
     @Test
