@@ -570,6 +570,10 @@ public class TerminalUiTest {
             onView(withText(title)).inRoot(isPlatformPopup()).perform(click());
             return;
         } catch (NoMatchingRootException notInThisProcess) {
+            // Only Android 17 (API 37) draws the floating toolbar in SystemUI,
+            // out of Espresso's reach. Below that a missing in-app popup is a
+            // regression, and the menu fallback would hide it.
+            if (android.os.Build.VERSION.SDK_INT < 37) throw notInThisProcess;
             Log.w(TAG, "selection toolbar is not an in-app popup; selecting \""
                     + title + "\" through the live ActionMode menu");
         }
