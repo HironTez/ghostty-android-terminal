@@ -19,11 +19,17 @@ applies to the app's existing native libraries, increasing installed size.
 
 `AndroidShellTools.prepare(Context)` verifies all executables and prepares
 private, absolute symlink aliases under `files/android-bin`. It replaces stale
-managed symlinks atomically after updates, but refuses to overwrite regular
-files. The executed inode is installer-managed code, **not a writable copy in
+managed symlinks atomically after updates and prunes managed links an update
+no longer provides (and pending links a crash left behind). It never
+overwrites a user's regular file at an alias name: that one alias is skipped
+and logged, so a conflict can never stop a shell from opening. A missing or
+non-executable bundled tool is still a hard error. The executed inode is installer-managed code, **not a writable copy in
 app data**. This is important for targetSdk 29+'s app-data W^X restriction.
 
-Every Android shell caller uses the Context-based `SessionCommand` factory:
+Every Android shell caller uses the Context-based `SessionCommand` factory —
+UI sessions, `TerminalSession`'s convenience constructor and the headless
+API's Android-shell `spawn`/`exec` (so `scripts/gterm exec -- busybox …`
+works); headless `env` entries still override these defaults:
 
 ```text
 PATH=<filesDir>/android-bin:/system/bin
@@ -33,7 +39,13 @@ TMPDIR=<cacheDir>
 TERM=xterm-256color
 ```
 
-The curated BusyBox applets cover file, text, archive and editor commands.
+The curated BusyBox applets cover file, text, archive and editor commands
+(plus `uname`). Because the aliases come before `/system/bin` they shadow
+toybox, so the config also enables the options common scripts expect
+(`head -1`/`-c`, `echo -n/-e`, `sha256sum -c`, `xargs -I/-P`, `find
+-empty/-executable/-newer`, `less -R`, `date -I`, `dd status=`, vi undo,
+awk GNU extensions). Not every toybox option is matched; use the explicit
+`/system/bin/<command>` path when one is missing.
 There is deliberately no `sh`/`bash` alias, privileged administration, or
 server installation. Shell builtins still take precedence, and explicit
 `/system/bin/<command>` remains available. `busybox ash` is an explicit
@@ -65,6 +77,12 @@ redirected to a user-local file. The script verifies the pinned NDK revision,
 uses API-29 Clang, builds from clean source trees, disables optional OpenSSH
 server/helper dependencies, and copies only the selected standalone tools.
 
+`COMPONENTS=busybox` builds only BusyBox and prints its SHA-256 instead of
+replacing prebuilts — this is how the shipped BusyBox is rebuilt from the
+extracted corresponding-source archive, which carries no OpenSSH/OpenSSL
+archives. `scripts/fetch-android-tools.sh [component…]` fetches selected
+components.
+
 `sources.lock` records fixed official release URLs and SHA-256 hashes. The
 fetcher verifies both downloaded and cached archives, and fails closed on
 checksum mismatch. BusyBox's hash is published by busybox.net; OpenSSH's hash
@@ -79,19 +97,47 @@ providers and engines disabled. Its headers and archive are privately staged.
 OpenSSH links static libcrypto and public Bionic/platform zlib. No GPL code is
 linked into OpenSSH, OpenSSL or the application's JNI library.
 
-The build requires `/system/bin/linker64`, a nonzero entry point, PIE,
-full RELRO, no text relocations, and explicit **16 KiB LOAD alignment**.
-`scripts/verify-android-tools.py <ndk> <abi>` validates those properties,
-architecture and allowed Android dynamic dependencies, then records output
-and source/build-input SHA-256 hashes in each ABI's `build.json`. Builds use a
-fixed source epoch/locale and prefix-mapped compiler paths. The manifests make
-changes auditable; full bit-for-bit reproducibility should be checked with a
-second clean build whenever the pinned toolchain/build recipe changes.
+### Verification and drift checks
+
+`scripts/verify-android-tools.py [--record] <ndk> <abi>` checks every
+executable on every run and refuses anything newer or unknown:
+
+- ET_DYN with a nonzero entry, `/system/bin/linker64`, `DF_1_PIE`, the right
+  machine;
+- **full RELRO**: a `PT_GNU_RELRO` segment *and* `DF_BIND_NOW` *and*
+  `DF_1_NOW`; no `TEXTREL`, `RPATH`/`RUNPATH`; a non-executable `PT_GNU_STACK`;
+- **16 KiB pages**: every `PT_LOAD` has `p_align` ≥ 0x4000 (a power of two)
+  and `p_offset ≡ p_vaddr (mod 0x4000)`;
+- only `libc.so`, `libm.so`, `libdl.so`, `libz.so` as `NEEDED`, and no
+  symbol version newer than API 29 (`LIBC`…`LIBC_Q`) — a binary needing
+  `LIBC_R`+ would fail to link on a minSdk device;
+- the `.note.android.ident` names API 29 and NDK r28c build 13676358.
+
+Default (check) mode then compares `build.json` with the binaries, the
+pinned NDK/API, the pinned upstream source versions/hashes from
+`sources.lock` (and any archive present in `sources/`), and the current hash
+of every build input (lock file, curated config, all scripts, all patches).
+An edited patch or script without a rebuild therefore fails, and a manifest
+with an unknown `schema` is refused. `--record` is only used by the build
+script right after building, and requires all three archives. Gradle's
+`verifyAndroidShellTools` (preBuild) repeats the cheap parts — schema,
+NDK/API/ABI, output hashes, source pins vs `sources.lock`, input drift, and
+the corresponding-source archive/manifest — so a stale tree cannot be
+packaged.
+
+Builds use a fixed `SOURCE_DATE_EPOCH`, `LC_ALL=C`/`TZ=UTC` and
+prefix-mapped compiler paths. Evidence from 2026-10-07: three clean full
+builds of both ABIs produced bit-identical `ssh`, `scp`, `sftp` and
+`ssh-keygen` once their inputs were fixed (`scp`/`sftp` also matched the
+prebuilts committed before this work); the final `libbusybox.so` came out
+identical from a BusyBox-only build, the full build, and a rebuild inside
+the extracted corresponding-source archive in another directory, for both
+ABIs. This is same-host evidence (one NDK install, one host toolchain), not
+an independent second-machine rebuild.
 
 Scratch builds are in `native/android-tools/.build/`, downloads in
-`native/android-tools/sources/`. Only the BusyBox source archive is needed in
-version control; OpenSSH/OpenSSL archives are verified fetch inputs. Do not
-commit scratch/staging trees.
+`native/android-tools/sources/`; both are git-ignored except the BusyBox
+upstream archive, which stays committed as corresponding source.
 
 ## Android-specific OpenSSH patches
 
@@ -106,9 +152,23 @@ layer:
 - The compiled fallback shell is `/system/bin/sh`. `SSH_PROGRAM=ssh` makes
   SCP/SFTP find the bundled SSH through PATH instead of `/usr/bin/ssh` or a
   build-machine staging path. Normal `-S` overrides remain supported.
-- `ssh-keygen -R`/`-H` back up known_hosts with rename instead of hard-linking
-  (Android apps cannot hard-link app data), and attempt to restore the
-  original if the final replacement fails.
+- **known_hosts rewrites are crash-safe and serialized**
+  (`0003-atomic-known-hosts.patch`, `android-known-hosts.h`). Upstream backs
+  up with `link(file, file.old)` and then one `rename(temp, file)`, so the
+  live name never disappears; Android app domains cannot hard-link app data.
+  The first Android patch used `rename(file, file.old)` + `rename(temp,
+  file)`, which left a window with *no* known_hosts: a crash or kill there
+  lost every recorded host key (the next connection would treat a changed
+  key as new), concurrent readers saw ENOENT, and a concurrent writer could
+  rename the other's fresh file away or fail. Now the backup is a copy
+  written to a temp file in the same directory, fsync'd and renamed over
+  `.old`; the new contents are fsync'd and atomically renamed over the live
+  file; the directory is fsync'd. An `flock()` on `<file>.lock` (released on
+  process death) is held across each read-modify-write — `ssh-keygen -R/-H`
+  and `UpdateHostKeys` replacement — and around `ssh`'s append of a new host,
+  so concurrent writers cannot lose each other's changes. The append falls
+  back to unlocked when no lock file can be created next to the target
+  (e.g. `UserKnownHostsFile=/dev/null`).
 - Android's `bzero` is a header-inline macro, not an exported function.
   Configure records that supported API; the explicit-zero fallback retains
   upstream's anti-optimization technique using a **volatile memset function
@@ -122,7 +182,9 @@ layer:
 - Upstream key/config permission validation, UID/GID privilege dropping and
   SSH protocol security checks are retained unchanged.
 - BusyBox recognizes its exact APK packaging name as a dispatcher as well as
-  its normal `busybox` alias, for direct-path diagnostics.
+  its normal `busybox` alias, for direct-path diagnostics. The patch carries a
+  description header and adds a modified-file notice with the date of change
+  (2026-10-04) to `libbb/appletlib.c`, as GPLv2 §2(a) requires.
 
 There is no `sshd`, `ssh-agent`, `sftp-server`, askpass app, FIDO helper,
 PKCS#11 provider or X11 helper in the initial bundle. The remote machine
@@ -132,108 +194,115 @@ private keys and config belong in `$HOME/.ssh` with normal secure permissions.
 ## Validation
 
 `AndroidShellToolsTest` runs commands through **the app's real PTY and app
-SELinux domain**, not adb shell. It checks installer-directory execution,
-private aliases, BusyBox dispatch/applets/pipelines/archive round trips,
-`ssh -V`, encrypted default-home key generation, user config loading,
-known_hosts rewriting/hashing, RSA/ECDSA/Ed25519 keys, SCP/SFTP's SSH helper and
-proxy-shell launch, update refresh, preservation of unrelated regular files,
-and the expected denial when executable bytes are copied into app data. `ShellSessionTest` also
-uses the actual bundled shell PATH. The tests isolate keys/config/known_hosts
-in a fresh temporary HOME rather than touching the user's existing files.
+SELinux domain**, not adb shell, in a fresh temporary HOME (never the user's
+keys/config/known_hosts). It checks installer-directory execution and private
+aliases, BusyBox dispatch/applets/pipelines/archive round trips, common
+toybox idioms the aliases shadow (`head -1`, `head -c`, `sha256sum -c`,
+`xargs -I`, `find -newer`, `less -R`, `date -I`), that **every applet
+enters its main() without crashing**, `ssh -V`, encrypted default-HOME key
+generation, `ssh -G` user config, known_hosts `-R`/`-H`/`-F`, two
+**concurrent `ssh-keygen -R` writers plus a reader** (the live file must
+always be complete and no removal may be lost), RSA/ECDSA keys,
+SCP/SFTP's SSH helper and proxy-shell launch, alias refresh/pruning and
+non-fatal conflicts, and the app-data copied-code exec denial (126).
+`ShellSessionTest` asserts the bundled PATH.
 
-Actual integrated instrumentation on API 34 x86_64 (SELinux
-Enforcing, animations off) passed **5/5 `AndroidShellToolsTest` tests** and
-**9/9 `ShellSessionTest` tests**, zero skipped. These executed the real app PTY
-and app UID: installer-directory BusyBox execution and archive/pipeline checks,
-app-data copied-code denial (exit 126), encrypted Ed25519/default HOME keys,
-RSA/ECDSA keys, user config, known_hosts rewrite/hash, and SSH/SCP/SFTP's actual
-SSH/proxy-shell helper launches. The proxy fixture intentionally fails with
-exit 255 after emitting its marker and consuming the client's banner. The
-original bare-printf proxy closed stdin too early, racing client SIGPIPE and
-cleanup; only that test fixture was corrected, not the native executables.
-`ssh -V` is not being counted as an authenticated connection or transfer.
+### Results (2026-10-07, branch head; Pixel 8 Pro, Android 17, arm64-v8a)
 
-These are historical results from the combined development checkout, not a
-fresh build or test of the extracted shell-tools branch. Unrelated input-field
-UI changes and test-harness fixes remain in the original checkout and are not
-part of this feature branch.
+Final debug APKs installed with `install -r` over the existing app (same
+debug certificate, data preserved). Instrumentation ran detached on the
+device; UI suites with the three animation scales at 0 and restored
+afterwards (1.0 / 1.0 / unset).
 
-The app APK remains `app/build/outputs/apk/debug/A-SH_v0.8.0.apk`, 49,209,266
-bytes, SHA-256 `c132d2f964293bb649c24aeec20ff2d94dd6d570df46bdb3af2fe3dc8d8f84fb`.
-The final test APK is `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`,
-5,367,310 bytes, SHA-256
-`ca08f3dcbb5f70a570f0c23746c5e8d8c42e67b5190b546134d615055ff7269b`.
-Constrained normal builds/preflight passed (JDK 21, two workers, 1536MiB heap,
-two active processors). Reports/raw instrumentation/logcat/build logs live at
-`/tmp/integrated-runtime-api34/`; `native-pty-smoke.log` extracts command and
-exit-status diagnostics. `summary-latest.json`/`junit-latest-46.xml` aggregate
-the latest class runs, while `summary.json` preserves the prior sweep's failure.
-`installed-artifacts-verified.json` confirms pulled-back app/test APK hashes
-match the stated artifacts. PackageManager and new proc-fd guest tests were
-not run in this window.
+| Suite | Result |
+| --- | --- |
+| `AndroidShellToolsTest` | 7/7 passed |
+| `ShellSessionTest` | 9/9 passed |
+| `EmulatorVtTest` | 54/54 passed |
+| `HeadlessApiTest` | 15/15 passed |
+| `TerminalUiTest` | 18/18 passed |
+| `TerminalInputFieldUiTest` | 14/14 passed |
 
-Further release acceptance needs a controlled SSH fixture for password/public-key auth,
-commands/interactive PTY, DNS, ProxyJump, SCP upload/download including `-O`,
-and batch/interactive SFTP. Cover API 29, current target-36 Android, x86_64,
-a real arm64 device, and a 16 KiB-page device/emulator. ELF alignment checking
-alone is not a substitute for the latter runtime test. Network/fixture tests
-must not silently depend on public services.
+No test was skipped. App APK SHA-256 `bd0efef9c402c66978fe05219e7e8fff8c374b7413d74b01f06f6abad8b01d3a`
+(16,789,298 bytes); test APK `f0f64f8c0b3cc39a1f1178f6d70be633fcbbcc9ad9b2e84a25d54dfd35571ee3`.
 
-## Licensing and complete corresponding source
+The first real-ARM run found that BusyBox `awk` and `diff` crashed (SIGSEGV)
+on every invocation: clang treats BusyBox's `const` `ptr_to_globals` as
+immutable and hoisted the first `G.x` access above `SET_PTR_TO_GLOBALS`, so
+the store went through NULL. The x86_64 emulator runs had not exposed it.
+The build now passes `-DBB_GLOBAL_CONST=` (the knob `libbb.h` documents for
+this), and the every-applet test guards the class of bug.
+
+Scripted on-device checks against a throwaway OpenSSH 10.5p1 `sshd`
+(host-built under `$DEV`, unprivileged, port 2222, own host key and
+`authorized_keys`, `internal-sftp`), reached from the phone via
+`adb reverse tcp:2222 tcp:2222`, with the client in a scratch HOME under the
+app's cache dir and the server's host key pinned in `known_hosts`
+(`StrictHostKeyChecking=yes`, `BatchMode=yes`):
+
+- `ssh-keygen -t ed25519` on the phone; public-key login; remote command
+  output (`uname -s`, `id -un`) returned; `ssh -tt` got a remote PTY
+  (`/dev/pts/N`, `stty size` 24 80);
+- 1 MiB random files: `scp` upload (SFTP protocol), `scp -O` upload (legacy
+  protocol), `scp` download, `sftp -b` put and get — all SHA-256 checksums
+  matched on both ends;
+- a wrong pinned host key was refused ("REMOTE HOST IDENTIFICATION HAS
+  CHANGED").
+- `scripts/gterm exec --type shell -- busybox uname -m` → `aarch64`; the
+  headless Android shell resolves `awk`, `ssh`, `scp`, `sftp`, `ssh-keygen`
+  from `files/android-bin`. (Without `--type shell`, `exec` targets the
+  installed userland, which has its own BusyBox.)
+- The license/source-extraction snippet below was run from the app's shell.
+
+Static checks: every ELF in the APK (`libterm.so`, `libarm64emu.so` and the
+five tools, both ABIs) has 16 KiB `PT_LOAD` alignment and congruent offsets
+(llvm-readelf from NDK r28c); the tools also pass the verifier above.
+
+Not yet covered: a 16 KiB-page device or emulator at runtime (this Pixel
+runs 4 KiB pages; static alignment is not a runtime test), API 29 hardware,
+password/keyboard-interactive auth, DNS/SSHFP and ProxyJump against a real
+fixture, and an interactive session typed through the UI rather than the
+PTY test harness / headless API.
+
+## Licensing and corresponding source
 
 License texts under `native/android-tools/licenses/` are APK assets. See the
-root `NOTICE` for upstream and local notices. BusyBox is GPLv2 and is kept in
-its own executable/process; OpenSSH uses its upstream permissive licenses,
-and OpenSSL 3 uses Apache-2.0.
+root `NOTICE` for upstream and local notices. BusyBox is GPL-2.0-only and is
+kept in its own executable/process; OpenSSH uses its upstream permissive
+licenses (plus BSD-2-Clause local patches), and OpenSSL 3 uses Apache-2.0.
+`scripts/android-tools-notices.py` retains per-file upstream
+copyright/license headers of OpenSSH and OpenSSL (a superset of the linked
+objects) as additional assets.
 
-The APK includes `assets/busybox-corresponding-source.tar.xz` with the
-unmodified upstream BusyBox archive, local patch, selected and normalized
-configs, pinned fetch/build/verification scripts and license texts. **Complete
-corresponding-source/rebuild compliance is not yet established:** the runtime-
-validated APK's archive omits `scripts/android-tools-notices.py`, a helper
-referenced by the build recipe. Completing that bundle/helper change remains
-pending explicit user permission; no denied helper edits were retried during
-runtime validation. Passing build preflight is not a GPL-completeness claim.
-Extract the current asset for review with:
+GPLv2 obligations for the shipped BusyBox, and how they are met:
+
+- **§1 license text** — `assets/BusyBox-LICENSE.txt` in every APK.
+- **§2(a) modified files** — the only modified file, `libbb/appletlib.c`,
+  gets a prominent notice with the author and the date of change from the
+  local patch; the patch file itself starts with the same information.
+- **§3(a) accompanying source** — every APK carries
+  `assets/busybox-corresponding-source.tar.xz` with the unmodified upstream
+  archive, the patch, the curated and both exact normalized configs, the
+  per-ABI `build.json`, every fetch/build/verify/notice/bundle script, the
+  license texts and `BUILDING-BusyBox.txt` (rebuild instructions). The NDK
+  and host build tools are not included; they are generally available
+  compilers. No written offer is relied on.
+
+`scripts/bundle-busybox-source.py` regenerates the archive reproducibly
+(ustar, fixed order/owner/mtime/modes, explicit xz preset) and the build
+script runs it automatically; `--check` rebuilds it in memory and fails on
+any difference. Rebuilding BusyBox from the extracted archive with
+`COMPONENTS=busybox` reproduced the shipped binaries bit-for-bit for both
+ABIs (2026-10-07). Refresh and redistribute the archive alongside any changed
+prebuilts/config/patches/scripts (Gradle refuses a stale one). It may also
+be published as a release sidecar. OpenSSH/OpenSSL full upstream sources
+remain available via the pinned, verified fetcher.
+
+This describes what is shipped and what was checked; it is not a legal
+review. There is no in-app license viewer yet: the assets are reachable by
+unpacking the APK, e.g. from the app's own shell:
 
 ```sh
-unzip terminal.apk assets/busybox-corresponding-source.tar.xz
-mkdir busybox-source
-tar -xJf assets/busybox-corresponding-source.tar.xz -C busybox-source
+cd "$TMPDIR" && unzip -o "$(dirname "$(readlink "$(command -v ssh)")")/../../base.apk" \
+    assets/busybox-corresponding-source.tar.xz assets/BusyBox-LICENSE.txt
 ```
-
-`scripts/android-tools-notices.py` retains per-file upstream copyright/license
-headers (a superset of linked objects) as additional APK license assets.
-`scripts/bundle-busybox-source.py` regenerates the deterministic source asset;
-the build script runs it automatically. Refresh and redistribute it alongside
-any changed prebuilts/config/patches/scripts. The same tarball may also be
-published as a release sidecar. OpenSSH/OpenSSL full upstream sources remain
-available via the pinned verified fetcher.
-
-## Extraction review handoff
-
-The local `feature/android-shell-tools` branch isolates this work for further
-review; extraction does not establish release readiness. No Gradle build,
-device command, or new runtime regression test was run during the split.
-The original files, both ABI prebuilts, complete current source assets, and
-uncommitted build/download caches were hash-verified and retained in a separate
-user-local backup before removing the feature from the original checkout.
-The OpenSSH/OpenSSL download archives and `.build/` scratch tree are not
-committed. The BusyBox upstream archive and current corresponding-source asset
-are committed.
-
-Unresolved items (no feature fixes were made during extraction):
-
-- The corresponding-source archive omits `scripts/android-tools-notices.py`.
-  Editing the bundling helper remains blocked pending explicit user permission;
-  neither that denied edit nor the denied `.gitignore` edit was retried.
-- Review BusyBox file/date GPL notices and the source-distribution licensing
-  details before release; retaining the existing source asset is not a
-  completeness/compliance finding.
-- The known_hosts replacement uses two renames and still has a crash gap;
-  exception-path restoration does not make the update crash-atomic.
-- ELF verification still needs review of full RELRO/NOW enforcement and its
-  future/input-drift checks. Existing verifier/preflight success must not be
-  read as closing those findings.
-- Controlled SSH authentication/transfer fixtures and the API/device matrix
-  described above remain required for release acceptance.
