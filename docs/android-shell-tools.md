@@ -20,9 +20,10 @@ applies to the app's existing native libraries, increasing installed size.
 `AndroidShellTools.prepare(Context)` verifies all executables and prepares
 private, absolute symlink aliases under `files/android-bin`. It replaces stale
 managed symlinks atomically after updates and prunes managed links an update
-no longer provides (and pending links a crash left behind). It never
-overwrites a user's regular file at an alias name: that one alias is skipped
-and logged, so a conflict can never stop a shell from opening. A missing or
+no longer provides (and pending links a crash left behind). A managed link
+is one that points at a bundled `lib*.so`. It never overwrites a user's file,
+or a symlink the user pointed elsewhere, at an alias name: that one alias is
+skipped and logged, so a conflict can never stop a shell from opening. A missing or
 non-executable bundled tool is still a hard error. The executed inode is installer-managed code, **not a writable copy in
 app data**. This is important for targetSdk 29+'s app-data W^X restriction.
 
@@ -60,7 +61,10 @@ and SELinux rules.
 
 Requirements: Linux x86_64 build machine, **NDK 28.2.13676358 (r28c)**, host C
 compiler, GNU make, Perl, patch, Python 3, curl, tar, and standard POSIX build
-utilities. No sudo or installation into `/usr` is necessary. Use an already
+utilities. Python 3.12+ (or 3.11.4+/3.10.12+/3.9.17+/3.8.17+) extracts the
+source archives with `tarfile`'s `data` filter; an older Python falls back to an
+equivalent explicit check (no absolute or `..` paths, no links escaping the
+tree, no device/FIFO members). No sudo or installation into `/usr` is necessary. Use an already
 provisioned distrobox or user-local tools; these scripts never provision host
 packages. Dependencies and output staging remain under the repository.
 
@@ -91,7 +95,16 @@ OpenSSL's hash is published in the 3.5.9 GitHub release assets. Hash pinning is
 not a claim of independently verified PGP release signatures.
 
 BusyBox starts from allnoconfig plus the committed curated config, then
-normalizes dependencies through oldconfig. The exact normalized configs are
+normalizes dependencies through oldconfig. Every `patches/busybox/*.patch` is
+applied, in bytewise-sorted order (the Gradle gate and the corresponding-source
+bundle treat the whole directory as input). Our `CFLAGS`/`LDFLAGS` reach BusyBox's
+make through the **environment**, never as `make CFLAGS=…` arguments: a
+command-line variable would override every `CFLAGS +=` in upstream
+`Makefile.flags` (`-funsigned-char`, `-fno-builtin-printf`/`-strlen`,
+`-ffunction-sections`/`-fdata-sections`, `-Oz`, `-fpie`, warnings,
+`CONFIG_EXTRA_CFLAGS`), while the environment value is kept and appended to.
+`-DBB_GLOBAL_CONST=` stays: clang otherwise hoists `G.x` loads above
+`SET_PTR_TO_GLOBALS` (awk/diff SIGSEGV on arm64). The exact normalized configs are
 retained beside the prebuilts. OpenSSL is PIC/static, with modules, dynamic
 providers and engines disabled. Its headers and archive are privately staged.
 OpenSSH links static libcrypto and public Bionic/platform zlib. No GPL code is
@@ -207,7 +220,32 @@ SCP/SFTP's SSH helper and proxy-shell launch, alias refresh/pruning and
 non-fatal conflicts, and the app-data copied-code exec denial (126).
 `ShellSessionTest` asserts the bundled PATH.
 
-### Results (2026-10-07, branch head; Pixel 8 Pro, Android 17, arm64-v8a)
+### Results after the review round (2026-10-07; Pixel 8 Pro, Android 17, arm64-v8a)
+
+BusyBox rebuilt with upstream's own flags kept (`-Oz`, `-funsigned-char`,
+`-ffunction-sections`, ... — they used to be dropped by command-line
+`CFLAGS`), plus the review fixes elsewhere in the app. `ssh`/`ssh-keygen` were
+rebuilt too; their bytes changed only by the checkout path OpenSSH embeds in
+its CFLAGS string. Animation scales at 0 for the UI suites, restored after.
+
+| Suite | Result |
+| --- | --- |
+| `AndroidShellToolsTest` | 7/7 passed (every-applet loop, `command -v` resolution) |
+| `ShellSessionTest` | 9/9 passed |
+| `EmulatorVtTest` | 54/54 passed |
+| `HeadlessApiTest` | 18/18 passed (final build, with the `signal` op tests) |
+| `UserlandAlpineSessionTest` | 4/4 passed (incl. `guestPathHasNoAndroidTools`) |
+| `ProcFdPermissionsTest` | 3/3 passed |
+| `TerminalUiTest` | 18/18 passed |
+| `TerminalInputFieldUiTest` | 14/14 passed |
+| `OnboardingActivityTest` | 2/2 (skips itself: a rootfs is installed) |
+
+`gterm` against the device: `awk`, `diff`, `sed`, `tar` from the rebuilt
+BusyBox; a 32 MiB `cat` round trip byte-identical in 2 s; Ctrl-C reaching a
+command that ignores a flooded stdin; a bad `--cwd` refused. The OpenSSH
+server checks below were not repeated for this build.
+
+### Earlier results (2026-10-07, before d5e482e; Pixel 8 Pro, Android 17, arm64-v8a)
 
 Final debug APKs installed with `install -r` over the existing app (same
 debug certificate, data preserved). Instrumentation ran detached on the

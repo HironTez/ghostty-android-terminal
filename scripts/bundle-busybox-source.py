@@ -46,7 +46,9 @@ from the files in this archive:
 
 Toolchain (not included; publicly available): Android NDK 28.2.13676358 (r28c)
 for the target compiler, plus a host C compiler, GNU make, patch, Python 3,
-Perl and tar on Linux x86_64. To rebuild BusyBox only:
+Perl and tar on Linux x86_64. Python 3.12+ (or 3.11.4+/3.10.12+/3.9.17+/
+3.8.17+) extracts with tarfile's 'data' filter; older versions fall back to an
+equivalent explicit path/link check. To rebuild BusyBox only:
 
   mkdir src && tar -xJf busybox-corresponding-source.tar.xz -C src && cd src
   ANDROID_NDK=/path/to/ndk/28.2.13676358 COMPONENTS=busybox \\

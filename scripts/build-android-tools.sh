@@ -56,7 +56,28 @@ with tarfile.open(root / 'sources' / src['file']) as archive:
         if len(parts) < 2:
             continue
         member.name = str(pathlib.PurePosixPath(*parts[1:]))
-        archive.extract(member, target, filter='data')
+        if hasattr(tarfile, 'data_filter'):
+            archive.extract(member, target, filter='data')
+            continue
+        # Python without extraction filters (< 3.12, < 3.11.4, < 3.8.17):
+        # refuse what filter='data' would refuse, then extract plainly.
+        if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
+            raise SystemExit(f'{component}: refusing special member {member.name}')
+        name = pathlib.PurePosixPath(member.name)
+        if name.is_absolute() or '..' in name.parts:
+            raise SystemExit(f'{component}: unsafe member path {member.name}')
+        if member.issym() or member.islnk():
+            link = pathlib.PurePosixPath(member.linkname)
+            base = name.parent if member.issym() else pathlib.PurePosixPath()
+            depth = len(base.parts)
+            for part in link.parts:
+                depth += -1 if part == '..' else 0 if part == '.' else 1
+                if depth < 0:
+                    break
+            if link.is_absolute() or depth < 0:
+                raise SystemExit(f'{component}: unsafe link {member.name} -> {member.linkname}')
+        member.mode &= 0o755
+        archive.extract(member, target, set_attrs=not member.issym())
 PY
     done
     CC=$TC/${TRIPLE}29-clang
@@ -65,7 +86,10 @@ PY
     LD_FLAGS='-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -Wl,-z,relro,-z,now'
     if has busybox; then (
         cd "$WORK/busybox"
-        patch -p1 < "$TOOLS/patches/busybox/0001-apk-name.patch"
+        # Every file under patches/busybox/ is a recorded build input (Gradle
+        # gate, corresponding-source bundle): apply them all, in sorted order.
+        # (LC_ALL=C above makes the glob sort bytewise.)
+        for p in "$TOOLS"/patches/busybox/*.patch; do patch -p1 < "$p"; done
         "$MAKE" HOSTCC="$HOSTCC" allnoconfig >/dev/null
         python3 - "$TOOLS/busybox.config" <<'PY'
 import pathlib, re, sys
@@ -80,8 +104,14 @@ PY
         # BB_GLOBAL_CONST='': clang treats BusyBox's "const" ptr_to_globals as
         # immutable and hoists G.x loads above SET_PTR_TO_GLOBALS (awk then
         # writes through NULL: SIGSEGV on arm64). libbb.h documents this knob.
-        "$MAKE" -j"$JOBS" HOSTCC="$HOSTCC" CC="$CC" AR="$AR" STRIP="$TC/llvm-strip" \
-            CFLAGS="$FLAGS -DBB_GLOBAL_CONST=" LDFLAGS="$LD_FLAGS" busybox
+        # CFLAGS/LDFLAGS go in through the environment, never as make
+        # arguments: a command-line variable overrides every `CFLAGS +=` in
+        # Makefile.flags (-funsigned-char, -fno-builtin-printf, -Os, ...),
+        # while the top Makefile's `CFLAGS := $(CFLAGS)` keeps the
+        # environment value and lets upstream append to it.
+        CFLAGS="$FLAGS -DBB_GLOBAL_CONST=" LDFLAGS="$LD_FLAGS" \
+            "$MAKE" -j"$JOBS" HOSTCC="$HOSTCC" CC="$CC" AR="$AR" \
+            STRIP="$TC/llvm-strip" busybox
         "$TC/llvm-strip" --strip-unneeded busybox
         if [ "$FULL" = 1 ]; then
             cp busybox "$OUT/libbusybox.so"
