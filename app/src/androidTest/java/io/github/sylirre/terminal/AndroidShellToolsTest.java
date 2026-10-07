@@ -96,10 +96,29 @@ public class AndroidShellToolsTest {
         assertTrue(run("busybox --list", 0).contains("awk\n"));
         assertTrue(run(quote(context.getApplicationInfo().nativeLibraryDir + "/libbusybox.so") + " --list", 0).contains("tar\n"));
         assertEquals("BETA\n", run("printf 'alpha\\nbeta\\n' | grep beta | awk '{print toupper($0)}'", 0));
+        // Aliases shadow toybox, so common toybox idioms must keep working.
+        assertEquals("one\none\nabc|x", run("printf 'one\\ntwo\\n' | head -1; printf 'one\\ntwo\\n' | head -n 1; "
+                + "printf abcdef | head -c 3; env echo -n '|x'", 0));
+        run("cd \"$HOME\" && printf x >f && sha256sum f >f.sha && sha256sum -c f.sha && "
+                + "echo f | xargs -I{} test -e {} && find . -maxdepth 1 -name f -newer /system | grep -q f && "
+                + "printf '\\033[1mB\\033[0m\\n' | less -R >/dev/null && date -I >/dev/null", 0);
         run("printf archive-test >\"$HOME/file\"; tar -czf \"$HOME/test.tgz\" -C \"$HOME\" file; "
                 + "mkdir \"$HOME/unpacked\"; tar -xzf \"$HOME/test.tgz\" -C \"$HOME/unpacked\"; "
                 + "cmp \"$HOME/file\" \"$HOME/unpacked/file\"", 0);
         assertTrue(run("ssh -V", 0).contains("OpenSSH_10.5p1"));
+    }
+
+    /**
+     * Every aliased applet enters its main() without crashing. Found on a
+     * real arm64 device: clang hoisted awk/diff's G.x loads above
+     * SET_PTR_TO_GLOBALS (SIGSEGV), which `--help` alone does not reach.
+     */
+    @Test public void everyAppletRunsWithoutCrashing() throws Exception {
+        String out = run("mkdir \"$HOME/smoke\" && cd \"$HOME/smoke\" && "
+                + "for a in $(busybox --list); do case $a in vi|less|yes) continue;; esac; "
+                + "busybox $a </dev/null >/dev/null 2>&1; r=$?; [ $r -lt 128 ] || echo \"CRASH $a $r\"; done; "
+                + "printf 'a\\nb\\n' >x; printf 'a\\nc\\n' >y; diff x y | tail -n 2 | tr -d '\\n'; echo", 0);
+        assertEquals("-b+c\n", out);
     }
 
     @Test public void keysConfigAndKnownHostsUseHomeNotBionicData() throws Exception {
@@ -139,11 +158,14 @@ public class AndroidShellToolsTest {
     @Test public void knownHostsRewritesAreAtomicAndSerialized() throws Exception {
         run("cd \"$HOME/.ssh\" && ssh-keygen -q -t ed25519 -N '' -f fixture && pub=$(cat fixture.pub) && "
                 + "{ echo \"keep-host $pub\"; for i in $(seq 1 40); do echo \"host$i $pub\"; done; } >known_hosts", 0);
-        String out = run("cd \"$HOME/.ssh\"; rm -f stop; "
-                + "( while [ ! -e stop ]; do grep -q '^keep-host ' known_hosts || echo READER-MISSING; done ) & r=$!; "
-                + "( for i in $(seq 1 20); do ssh-keygen -R host$i >/dev/null 2>&1 || echo FAIL-A$i; done ) & a=$!; "
-                + "( for i in $(seq 21 40); do ssh-keygen -R host$i >/dev/null 2>&1 || echo FAIL-B$i; done ) & b=$!; "
-                + "wait $a; wait $b; touch stop; wait $r; echo DONE", 0);
+        // A script file, so the interactive shell's job-control notices
+        // ("[1] 1234") stay out of the output.
+        write(new File(scratch, "race.sh"), "cd \"$HOME/.ssh\"; rm -f stop\n"
+                + "( while [ ! -e stop ]; do grep -q '^keep-host ' known_hosts || echo READER-MISSING; done ) & r=$!\n"
+                + "( for i in $(seq 1 20); do ssh-keygen -R host$i >/dev/null 2>&1 || echo FAIL-A$i; done ) & a=$!\n"
+                + "( for i in $(seq 21 40); do ssh-keygen -R host$i >/dev/null 2>&1 || echo FAIL-B$i; done ) & b=$!\n"
+                + "wait $a; wait $b; touch stop; wait $r; echo DONE\n");
+        String out = run("/system/bin/sh \"$HOME/race.sh\"", 0);
         assertEquals("DONE\n", out);
         String hosts = read(new File(scratch, ".ssh/known_hosts"));
         assertTrue(hosts, hosts.startsWith("keep-host "));

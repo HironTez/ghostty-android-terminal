@@ -77,8 +77,11 @@ lines = [line for line in lines if not any(line.startswith(k + '=') or
 pathlib.Path('.config').write_text('\n'.join(lines) + '\n' + seed)
 PY
         yes '' | "$MAKE" HOSTCC="$HOSTCC" oldconfig >/dev/null
+        # BB_GLOBAL_CONST='': clang treats BusyBox's "const" ptr_to_globals as
+        # immutable and hoists G.x loads above SET_PTR_TO_GLOBALS (awk then
+        # writes through NULL: SIGSEGV on arm64). libbb.h documents this knob.
         "$MAKE" -j"$JOBS" HOSTCC="$HOSTCC" CC="$CC" AR="$AR" STRIP="$TC/llvm-strip" \
-            CFLAGS="$FLAGS" LDFLAGS="$LD_FLAGS" busybox
+            CFLAGS="$FLAGS -DBB_GLOBAL_CONST=" LDFLAGS="$LD_FLAGS" busybox
         "$TC/llvm-strip" --strip-unneeded busybox
         if [ "$FULL" = 1 ]; then
             cp busybox "$OUT/libbusybox.so"
