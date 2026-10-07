@@ -78,6 +78,7 @@ Java  app/src/main/java/io/github/sylirre/terminal/
          ScreenSnapshot (flat viewport arrays for rendering)
   ui/    TerminalView (Canvas grid renderer + TYPE_NULL InputConnection)
          ExtraKeysView, TabStripView, MainActivity
+         TerminalInputFieldView (the Aa local draft field; docs/input-field.md)
          OnboardingActivity (first-run intro + distro chooser + install)
          Chrome/ChromePalette/TopBarView/EdgeInsets/Dialogs/KeyCaps (shared
          chrome: drawable factories + design tokens, theme-derived main-screen
@@ -182,8 +183,10 @@ thread → `TerminalView` pulls a fresh `ScreenSnapshot` in `onDraw`.
   `TerminalUiTest`
   (ActivityScenario + Espresso; launches with
   `MainActivity.EXTRA_FORCE_SHELL` so it always tests plain sh and never
-  sees onboarding), `OnboardingActivityTest` (wizard flows that install
-  nothing; skips itself when a rootfs is already installed).
+  sees onboarding), `TerminalInputFieldUiTest` (Espresso, the Aa draft
+  field; restores the settings it changes in `@After`),
+  `OnboardingActivityTest` (wizard flows that install nothing; skips itself
+  when a rootfs is already installed).
 - Shell output is asynchronous: poll with `TestUtil.waitFor`, never fixed
   sleeps. Pass the optional diagnostic supplier so timeouts dump the screen.
 - Write escape sequences as `\u001b` string escapes, never raw control

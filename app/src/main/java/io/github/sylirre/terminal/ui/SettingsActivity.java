@@ -141,6 +141,17 @@ public final class SettingsActivity extends Activity {
                 settings::setRichKeyboard)
                 .enabledWhen(settings::touchKeyboard));
         keyboard.add(new Setting.Toggle(
+                getString(R.string.setting_input_field_title),
+                getString(R.string.setting_input_field_summary),
+                settings::inputFieldEnabled,
+                settings::setInputFieldEnabled));
+        keyboard.add(new Setting.Toggle(
+                getString(R.string.setting_input_field_capitalize_title),
+                getString(R.string.setting_input_field_capitalize_summary),
+                settings::inputFieldAutoCapitalization,
+                settings::setInputFieldAutoCapitalization)
+                .enabledWhen(settings::inputFieldEnabled));
+        keyboard.add(new Setting.Toggle(
                 getString(R.string.setting_extra_keys_enabled_title),
                 getString(R.string.setting_extra_keys_enabled_summary),
                 settings::extraKeysEnabled,

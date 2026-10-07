@@ -203,6 +203,7 @@ into the guest when it lies inside the rootfs, else `/`).
 | `TerminalView` | Canvas grid renderer, IME connection, scroll + pinch-zoom gestures |
 | `ExtraKeysView` | ESC/CTRL/ALT/TAB/arrows… toolbar; CTRL/ALT are sticky modifiers |
 | `TabStripView` | Horizontal session tabs + new-tab button |
+| `TerminalInputFieldView` | The **Aa** local draft field above the toolbar: ordinary Android editing, then Send/Run through the paste encoder ([input-field.md](input-field.md)) |
 | `MainActivity` | Wires the above, handles window insets |
 | `OnboardingActivity` | First-run intro + distro chooser + rootfs install wizard (also reachable later in setup-only mode) |
 

@@ -1374,13 +1374,21 @@ public class TerminalView extends View {
     }
 
     private void pasteClipboard() {
-        String text = clipboardText();
-        if (text == null || session == null) return;
+        pasteText(clipboardText());
+    }
+
+    /** Shared clipboard/draft path: paste encoding, never sticky key modifiers. */
+    public boolean pasteText(String text) {
+        if (text == null || text.isEmpty() || session == null
+                || session.exitCode() != null) return false;
         byte[] encoded = session.emulator.encodePaste(text);
-        if (encoded == null) return;
+        if (encoded == null) return false;
+        if (selecting) finishSelection();
+        resetRichInput();
         jumpToPresent();
         session.writeBytes(encoded);
         invalidate();
+        return true;
     }
 
     // --- Search ---

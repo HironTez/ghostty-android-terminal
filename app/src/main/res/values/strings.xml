@@ -27,6 +27,19 @@
     <string name="search_close_label">&#10005;</string>
     <string name="search_close_description">Close search</string>
 
+    <!-- Terminal input field: the Aa toggle in the top bar and the draft editor -->
+    <string name="input_field_button_label">Aa</string>
+    <string name="input_field_button_show_description">Show terminal input field</string>
+    <string name="input_field_button_hide_description">Hide terminal input field</string>
+    <string name="input_field_button_state_open">Open</string>
+    <string name="input_field_button_state_closed">Closed</string>
+    <string name="input_field_description">Terminal input draft</string>
+    <string name="input_field_hint">Draft input — Send or Run explicitly</string>
+    <string name="input_field_send_label">Send</string>
+    <string name="input_field_send_description">Send draft without Enter</string>
+    <string name="input_field_run_label">Run</string>
+    <string name="input_field_run_description">Send draft and Enter</string>
+
     <!-- Settings screen -->
     <string name="settings_dialog_title">Settings</string>
     <string name="settings_group_appearance">Appearance</string>
@@ -179,6 +192,12 @@
     <!-- Settings: Touch keyboard -->
     <string name="setting_touch_keyboard_title">Show touch keyboard</string>
     <string name="setting_touch_keyboard_summary">Automatically raise the soft keyboard when opening the app, creating a session, or tapping the terminal. Search always shows the keyboard regardless.</string>
+
+    <!-- Settings: Terminal input field -->
+    <string name="setting_input_field_title">Terminal input field</string>
+    <string name="setting_input_field_summary">Show the Aa control for a separate autocorrect draft. Send or Run explicitly; typing never sends input.</string>
+    <string name="setting_input_field_capitalize_title">Capitalize draft sentences</string>
+    <string name="setting_input_field_capitalize_summary">Ask the keyboard to capitalize sentences in the input field. Off is safer for case-sensitive commands and paths.</string>
 
     <!-- Settings: Scrollback buffer -->
     <string name="setting_scrollback_title">Scrollback buffer</string>

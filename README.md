@@ -111,6 +111,10 @@ made of regular files, directories and links only.
   shell otherwise); **long-press `+`** opens the other kind — or the
   distribution setup when none is installed yet. Tap a tab to
   switch; `×` closes the current one. Closing the last tab exits the app.
+- **Input field**: the **Aa** button in the top bar opens a local draft
+  field above the toolbar for autocorrect, swipe typing and editing before
+  anything reaches the terminal; **Send** pastes it, **Run** pastes it and
+  presses Enter. See [docs/input-field.md](docs/input-field.md).
 - **Userland**: you are (fake) root; `apk add …` (Alpine) or
   `apt update && apt install …` (Debian) works. Networking uses the app's
   permissions; everything actually runs as the app's unprivileged uid.
@@ -140,6 +144,7 @@ See [docs/testing.md](docs/testing.md).
 - [docs/native-build.md](docs/native-build.md) — how the Ghostty library is
   cross-compiled and how to upgrade it
 - [docs/testing.md](docs/testing.md) — test suites and how to run them
+- [docs/input-field.md](docs/input-field.md) — the Aa draft input field
 
 ## License
 
