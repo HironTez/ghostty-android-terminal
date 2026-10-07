@@ -18,6 +18,7 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE /* pipe2 */
 #endif
+#include <android/api-level.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <jni.h>
@@ -88,14 +89,33 @@ static void free_cstr_array(char **a) {
  * other sessions' PTY masters and — worse — the write ends of a concurrent
  * pipe spawn's stdin, whose reader then never sees EOF.
  */
-static void close_inherited_fds(void) {
+static int g_close_range_ok = -1;
+
+/*
+ * Decides, in the parent before fork(), whether a child may use close_range.
+ * The NDK headers define the number on every API level, but Android's app
+ * seccomp policy kills a disallowed syscall with SIGSYS rather than failing it
+ * with ENOSYS, and the Android 10/11 policies predate close_range (Linux 5.9):
+ * calling it there killed every child before the fallback could run. API 34
+ * is where bionic exports close_range, so its policy allows it.
+ */
+static void prepare_close_fds(void) {
+    if (g_close_range_ok < 0)
+        g_close_range_ok = android_get_device_api_level() >= 34;
+}
+
+static void close_fds_from(int low) {
 #ifdef __NR_close_range
-    if (syscall(__NR_close_range, 3U, ~0U, 0U) == 0) return;
+    if (g_close_range_ok > 0 &&
+        syscall(__NR_close_range, (unsigned)low, ~0U, 0U) == 0)
+        return;
 #endif
     long max = sysconf(_SC_OPEN_MAX);
     if (max < 0 || max > 65536) max = 65536;
-    for (int fd = 3; fd < max; fd++) close(fd);
+    for (int fd = low; fd < max; fd++) close(fd);
 }
+
+static void close_inherited_fds(void) { close_fds_from(3); }
 
 /*
  * The fork()ed child's common tail for both spawn flavors (PTY and pipes):
@@ -105,7 +125,12 @@ __attribute__((noreturn))
 static void enter_child(const char *cmd, char **argv, char **envp,
                         const char *cwd) {
     close_inherited_fds();
-    if (cwd) chdir(cwd);
+    if (cwd && chdir(cwd) != 0) {
+        /* Never run in some other directory than the one asked for. */
+        static const char msg[] = "cannot change to the working directory\n";
+        write(STDERR_FILENO, msg, sizeof msg - 1);
+        _exit(127);
+    }
     /* fork() copies the calling (ART) thread's signal mask and signal
      * dispositions. execve() resets handled dispositions (though not
      * ignored ones), but the in-process engines keep the inherited ART
@@ -173,6 +198,7 @@ static jint spawn_on_pty(JNIEnv *env, jstring jcmd, jobjectArray jargs,
     char **argv = to_cstr_array(env, jargs);
     char **envp = to_cstr_array(env, jenv);
 
+    prepare_close_fds();
     pid_t pid = fork();
     if (pid < 0) {
         int err = errno; /* the cleanup below may clobber it */
@@ -281,6 +307,7 @@ static jint vm_start(JNIEnv *env, jobjectArray jargs, jobjectArray jenv,
     char **envp = to_cstr_array(env, jenv);
     const char *cwd = jcwd ? (*env)->GetStringUTFChars(env, jcwd, NULL) : NULL;
 
+    prepare_close_fds();
     pid_t pid = fork();
     if (pid < 0) {
         int err = errno; /* the cleanup below may clobber it */
@@ -309,7 +336,7 @@ static jint vm_start(JNIEnv *env, jobjectArray jargs, jobjectArray jenv,
         /* Everything above the bindings belongs to the parent: our ends of every
          * pair, the parked copies, and whatever else this process had open. No
          * exec happens here, so FD_CLOEXEC cannot do it for us. */
-        for (int f = 3 + n_chan; f < 256; f++) close(f);
+        close_fds_from(3 + n_chan);
         /* Same reasoning as the exec path below, and it matters more here: this
          * child never execs, so nothing else would reset the ART signal
          * dispositions it inherited. */
@@ -400,6 +427,7 @@ static jint spawn_on_pipes(JNIEnv *env, jstring jcmd, jobjectArray jargs,
     char **argv = to_cstr_array(env, jargs);
     char **envp = to_cstr_array(env, jenv);
 
+    prepare_close_fds();
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
