@@ -199,6 +199,39 @@ public class HeadlessApiTest {
     }
 
     @Test
+    public void deeplyNestedRequestIsAnErrorNotACrash() throws Exception {
+        // org.json recurses per level: this overflows the connection's stack.
+        StringBuilder sb = new StringBuilder("{\"op\":");
+        for (int i = 0; i < 60_000; i++) sb.append('[');
+        try (Client c = new Client()) {
+            c.out.write((sb + "\n").getBytes(StandardCharsets.UTF_8));
+            c.out.flush();
+            ByteArrayOutputStream line = new ByteArrayOutputStream();
+            int ch;
+            while ((ch = c.in.read()) >= 0 && ch != '\n') line.write(ch);
+            assertFalse(line.toString("UTF-8"),
+                    new JSONObject(line.toString("UTF-8")).getBoolean("ok"));
+        }
+        assertTrue(call(req("status")).getBoolean("ok")); // and the server lives on
+    }
+
+    @Test
+    public void overlongRequestLineIsAnError() throws Exception {
+        byte[] big = new byte[(1 << 16) + 16];
+        java.util.Arrays.fill(big, (byte) 'x');
+        try (Client c = new Client()) {
+            c.out.write(big);
+            c.out.flush();
+            ByteArrayOutputStream line = new ByteArrayOutputStream();
+            int ch;
+            while ((ch = c.in.read()) >= 0 && ch != '\n') line.write(ch);
+            JSONObject r = new JSONObject(line.toString("UTF-8"));
+            assertFalse(r.getBoolean("ok"));
+            assertTrue(r.toString(), r.getString("error").contains("too long"));
+        }
+    }
+
+    @Test
     public void peerPolicy() {
         int me = Process.myUid(), pid = Process.myPid();
         assertTrue(HeadlessServer.isAllowedPeer(0, 1));
@@ -244,11 +277,13 @@ public class HeadlessApiTest {
 
     @Test
     public void spawnAttachedShellRoundTripAndExitCode() throws Exception {
+        int id = -1;
         try (Client c = new Client()) {
             JSONObject r = c.request(req("spawn").put("type", "shell")
                     .put("cols", 100).put("rows", 30));
             assertTrue(r.toString(), r.getBoolean("ok"));
-            int id = r.getInt("id");
+            id = r.getInt("id");
+            int sid = id;
             assertEquals("shell", r.getString("type"));
             // mksh drops typeahead when its line editor starts: wait for the prompt.
             c.pumpUntilData("$ ");
@@ -270,7 +305,32 @@ public class HeadlessApiTest {
             c.type("exit 7\n");
             assertEquals(7, c.pumpUntilExit());
             // Nobody else listens to a headless session: the reaper drops it.
-            waitFor("session reaped", TIMEOUT_MS, () -> !sessionListed(id));
+            waitFor("session reaped", TIMEOUT_MS, () -> !sessionListed(sid));
+        } finally {
+            if (id >= 0) call(req("kill").put("id", id)); // a failed run leaves no shell
+        }
+    }
+
+    /**
+     * A command's last output reaches the client although the process exits
+     * right after writing it: the reaper must not close the PTY before the
+     * reader has drained it.
+     */
+    @Test
+    public void spawnedCommandOutputTailSurvivesExit() throws Exception {
+        int id = -1;
+        try (Client c = new Client()) {
+            JSONObject r = c.request(req("spawn").put("type", "shell")
+                    .put("argv", new JSONArray().put("sh").put("-c")
+                            .put("seq 1 20000; echo tail-END")));
+            assertTrue(r.toString(), r.getBoolean("ok"));
+            id = r.getInt("id");
+            assertEquals(0, c.pumpUntilExit());
+            String out = c.data();
+            assertTrue(out.length() > 200 ? out.substring(out.length() - 200) : out,
+                    out.contains("19999\r\n20000\r\ntail-END"));
+        } finally {
+            if (id >= 0) call(req("kill").put("id", id));
         }
     }
 
@@ -279,21 +339,28 @@ public class HeadlessApiTest {
         JSONObject r = call(req("spawn").put("type", "shell").put("attach", false));
         assertTrue(r.toString(), r.getBoolean("ok"));
         int id = r.getInt("id");
-        assertFalse(findSession(id).getBoolean("attached"));
-        waitForPrompt(id);
+        try {
+            assertFalse(findSession(id).getBoolean("attached"));
+            waitForPrompt(id);
 
-        try (Client a = new Client()) {
-            JSONObject ar = a.request(req("attach").put("id", id).put("cols", 81).put("rows", 22));
-            assertTrue(ar.toString(), ar.getBoolean("ok"));
-            a.type("stty size\n");
-            a.pumpUntilData("22 81");
+            try (Client a = new Client()) {
+                JSONObject ar = a.request(req("attach").put("id", id)
+                        .put("cols", 81).put("rows", 22));
+                assertTrue(ar.toString(), ar.getBoolean("ok"));
+                assertEquals(81, ar.getInt("cols"));
+                assertEquals(22, ar.getInt("rows"));
+                a.type("stty size\n");
+                a.pumpUntilData("22 81");
 
-            JSONObject k = call(req("kill").put("id", id));
-            assertTrue(k.toString(), k.getBoolean("ok"));
-            a.pumpUntilExit();
-            assertFalse(sessionListed(id));
+                JSONObject k = call(req("kill").put("id", id));
+                assertTrue(k.toString(), k.getBoolean("ok"));
+                a.pumpUntilExit();
+                assertFalse(sessionListed(id));
+            }
+            assertFalse(call(req("kill").put("id", id)).getBoolean("ok"));
+        } finally {
+            call(req("kill").put("id", id)); // a no-op unless an assertion failed
         }
-        assertFalse(call(req("kill").put("id", id)).getBoolean("ok"));
     }
 
     @Test
@@ -407,6 +474,78 @@ public class HeadlessApiTest {
         }
     }
 
+    /**
+     * Output is drained for as long as it keeps moving, however slowly the
+     * client reads: here a background writer holds the pipe after sh exits,
+     * and the client reads nothing for longer than the idle bound.
+     */
+    @Test
+    public void execDrainsOutputForASlowClient() throws Exception {
+        final int size = 8 << 20;
+        try (Client c = new Client()) {
+            assertTrue(c.request(req("exec").put("type", "shell")
+                    .put("cmd", "head -c " + size + " /dev/zero &")).getBoolean("ok"));
+            // A stalled reader, not a timing bet: whatever the scheduling, the
+            // pipe stays busy (blocked on this client) the whole time.
+            Thread.sleep(4500);
+            assertEquals(0, c.pumpUntilExit());
+            assertEquals(size, c.data.size());
+            assertFalse(c.pump()); // nothing after EXIT; the server closed
+        }
+    }
+
+    /**
+     * A client that leaves while the command ignores its stdin (the 8 MiB
+     * queue full, the frame loop waiting for room) still hangs the command up.
+     */
+    @Test
+    public void execClientHangupWhileStdinBackedUpKillsTheCommand() throws Exception {
+        Client c = new Client();
+        try {
+            JSONObject r = c.request(req("exec").put("type", "shell")
+                    .put("argv", new JSONArray().put("sleep").put("120")));
+            assertTrue(r.toString(), r.getBoolean("ok"));
+            int pid = r.getInt("pid");
+            final long[] written = {0};
+            Thread writer = new Thread(() -> {
+                byte[] chunk = Frames.encode(Frames.DATA, new byte[1 << 20]);
+                try {
+                    for (int i = 0; i < 16; i++) {
+                        c.out.write(chunk);
+                        c.out.flush();
+                        synchronized (written) {
+                            written[0] += 1 << 20;
+                        }
+                    }
+                } catch (IOException ignored) {
+                    // Expected: the socket is shut down under the blocked write.
+                }
+            });
+            writer.start();
+            // Past 9 MiB the server holds a full queue plus one frame it waits
+            // to queue: the frame loop is no longer reading the socket.
+            waitFor("stdin backed up", TIMEOUT_MS, () -> {
+                synchronized (written) {
+                    return written[0] >= 9 << 20;
+                }
+            });
+            c.sock.shutdownOutput();
+            c.close();
+            writer.join(TIMEOUT_MS);
+            // SIGHUP ends sleep; the exec is then gone from the signal op.
+            waitFor("command hung up", TIMEOUT_MS, () -> {
+                try {
+                    return !call(req("signal").put("pid", pid).put("sig", 28))
+                            .getBoolean("ok");
+                } catch (Exception e) {
+                    throw new AssertionError(e);
+                }
+            });
+        } finally {
+            c.close();
+        }
+    }
+
     @Test
     public void execInUserland() throws Exception {
         assumeTrue("no usable userland rootfs installed",
@@ -416,8 +555,9 @@ public class HeadlessApiTest {
                     .put("argv", new JSONArray().put("sh").put("-c")
                             .put("echo guest-$((2+3)); test -e /etc/os-release && echo has-os; exit 4")));
             assertTrue(r.toString(), r.getBoolean("ok"));
+            int code = c.pumpUntilExit();
             assertEquals(c.data() + new String(c.stderr.toByteArray(), StandardCharsets.UTF_8),
-                    4, c.pumpUntilExit());
+                    4, code);
             assertTrue(c.data(), c.data().contains("guest-5"));
             assertTrue(c.data(), c.data().contains("has-os"));
         }
@@ -434,6 +574,10 @@ public class HeadlessApiTest {
     /** The probe's output (its echoed command line reads len[${#reply}]). */
     private static final java.util.regex.Pattern LEN =
             java.util.regex.Pattern.compile("len\\[\\d+\\]");
+
+    /** A cursor report as the tty echoes it back with ECHOCTL. */
+    private static final java.util.regex.Pattern ECHOED_REPLY =
+            java.util.regex.Pattern.compile("\\^\\[\\[\\d+;\\d+R");
 
     private static final TerminalSession.OutputTap NULL_TAP = new TerminalSession.OutputTap() {
         @Override public void onOutput(byte[] buf, int len) {}
@@ -463,7 +607,10 @@ public class HeadlessApiTest {
             s.write("clear\n");
             waitFor("cleared", TIMEOUT_MS, () -> !screen(s).contains("len[0]"), () -> screen(s));
             s.write(probe);
-            Thread.sleep(1000);
+            // The reply lands in the tty's line buffer, which echoes it back
+            // (ECHOCTL: "^[[24;1R"); only then may the newline end the read.
+            waitFor("reply echoed", TIMEOUT_MS, () -> ECHOED_REPLY.matcher(screen(s)).find(),
+                    () -> screen(s));
             s.write("\n");
             waitFor("untapped probe", TIMEOUT_MS, () -> LEN.matcher(screen(s)).find(),
                     () -> screen(s));

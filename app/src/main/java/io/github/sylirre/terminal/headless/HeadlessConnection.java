@@ -8,6 +8,10 @@ import android.content.pm.PackageManager;
 import android.net.LocalSocket;
 import android.os.Process;
 import android.os.SystemClock;
+import android.system.ErrnoException;
+import android.system.Os;
+import android.system.OsConstants;
+import android.system.StructPollfd;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -18,6 +22,7 @@ import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -26,6 +31,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BooleanSupplier;
 
 import io.github.sylirre.terminal.term.ProcessPipes;
 import io.github.sylirre.terminal.term.SessionCommand;
@@ -112,13 +118,15 @@ final class HeadlessConnection implements Runnable {
                 error("bad request: " + e.getMessage());
             } catch (IOException ignored) {
             }
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
             // A bad request must never take the process down: every session,
-            // the UI's included, lives in it.
+            // the UI's included, lives in it. Errors too: org.json recurses
+            // per nesting level, so a deeply nested request overflows the stack.
             android.util.Log.e("HeadlessServer", "request failed", e);
             try {
                 error("internal error: " + e);
-            } catch (IOException ignored) {
+            } catch (Throwable ignored) {
+                // Out of memory, or the client is gone: closing is all that is left.
             }
         } finally {
             close();
@@ -441,6 +449,7 @@ final class HeadlessConnection implements Runnable {
                 int n;
                 while ((n = in.read(buf)) >= 0) {
                     if (n > 0) {
+                        if (s.tap() != att) break; // kicked: what is left is not ours
                         byte[] b = new byte[n];
                         System.arraycopy(buf, 0, b, 0, n);
                         s.writeBytes(b);
@@ -449,12 +458,15 @@ final class HeadlessConnection implements Runnable {
             } else {
                 Frames.Frame f;
                 while ((f = Frames.read(in)) != null) {
+                    // Kicked by another client: frames still buffered here
+                    // must not reach a session that now belongs to it.
+                    if (s.tap() != att) break;
                     if (f.type == Frames.DATA) {
                         if (f.payload.length > 0) s.writeBytes(f.payload);
                     } else if (f.type == Frames.RESIZE && f.payload.length >= 4) {
                         int cols = ((f.payload[0] & 0xff) << 8) | (f.payload[1] & 0xff);
                         int rows = ((f.payload[2] & 0xff) << 8) | (f.payload[3] & 0xff);
-                        if (cols > 0 && rows > 0 && s.tap() == att) {
+                        if (cols > 0 && rows > 0) {
                             // Same bounds as spawn/attach (dim): a grid this
                             // big is allocated per frame on the main thread.
                             s.resizeExternal(Math.min(1000, cols), Math.min(1000, rows));
@@ -720,18 +732,25 @@ final class HeadlessConnection implements Runnable {
         }
 
         EXECS.put(p.pid(), p);
-        Thread outPump = pump(p.stdout, Frames.DATA, "exec-out");
-        Thread errPump = pump(p.stderr, Frames.STDERR, "exec-err");
+        Pump outPump = new Pump(p.stdout, Frames.DATA, "exec-out");
+        Pump errPump = new Pump(p.stderr, Frames.STDERR, "exec-err");
         Thread waiter = new Thread(() -> {
             int code = p.waitFor();
             EXECS.remove(p.pid(), p);
-            // Drain what the child wrote before it exited; bounded, because a
-            // background process it started can keep the pipes open.
-            join(outPump, 2000);
-            join(errPump, 2000);
-            try {
-                out.exit(code);
-            } catch (IOException ignored) {
+            // Drain what the child wrote before it exited, however slowly the
+            // client reads it. Only idleness is bounded: a background process
+            // it started can keep the pipes open without writing.
+            while (true) {
+                Pump busy = outPump.busy() ? outPump : errPump.busy() ? errPump : null;
+                if (busy == null) break;
+                join(busy.thread, 50);
+            }
+            synchronized (out) {
+                execEnded = true; // and no pump writes past the EXIT
+                try {
+                    out.exit(code);
+                } catch (IOException ignored) {
+                }
             }
             close();
             p.close();
@@ -739,12 +758,12 @@ final class HeadlessConnection implements Runnable {
         waiter.setDaemon(true);
         waiter.start();
 
-        StdinFeeder stdin = new StdinFeeder(p);
+        StdinFeeder stdin = new StdinFeeder(p, this::peerHungUp);
         try {
             Frames.Frame f;
             while ((f = Frames.read(in)) != null) {
                 if (f.type == Frames.DATA) {
-                    stdin.write(f.payload);
+                    if (!stdin.write(f.payload)) break; // the client hung up
                 } else if (f.type == Frames.EOF) {
                     stdin.eof();
                 } else if (f.type == Frames.SIGNAL && f.payload.length >= 1) {
@@ -774,36 +793,45 @@ final class HeadlessConnection implements Runnable {
      * stops reading blocked the frame loop once the pipe filled, and with it
      * the SIGNAL frames (Ctrl-C) and the noticing of a client that left. Data
      * is queued up to {@link #LIMIT}; past that the loop waits — that is the
-     * back-pressure — but gives up as soon as the child is gone. After the
-     * child closes its stdin, further data is dropped and signals still served.
+     * back-pressure — but gives up as soon as the child is gone, or the client:
+     * not reading meanwhile, the loop would never see its EOF, and the
+     * disconnect's SIGHUP/SIGKILL would never come. After the child closes its
+     * stdin, further data is dropped and signals still served.
      */
     private static final class StdinFeeder implements Runnable {
         private static final int LIMIT = 8 << 20;
         private final ProcessPipes p;
+        private final BooleanSupplier peerGone;
         private final ArrayDeque<byte[]> queue = new ArrayDeque<>();
         private int queued;
         private boolean eof;
         private boolean stopped;
 
-        StdinFeeder(ProcessPipes p) {
+        StdinFeeder(ProcessPipes p, BooleanSupplier peerGone) {
             this.p = p;
+            this.peerGone = peerGone;
             Thread t = new Thread(this, "exec-in");
             t.setDaemon(true);
             t.start();
         }
 
-        synchronized void write(byte[] b) {
-            if (b.length == 0) return;
+        /** Queues {@code b}; false if the client hung up while this waited for room. */
+        synchronized boolean write(byte[] b) {
+            if (b.length == 0) return true;
             try {
-                while (queued >= LIMIT && !stopped && p.exitCode() == null) wait(100);
+                while (queued >= LIMIT && !stopped && p.exitCode() == null) {
+                    wait(100);
+                    if (peerGone.getAsBoolean()) return false;
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return;
+                return true;
             }
-            if (stopped || eof) return;
+            if (stopped || eof) return true;
             queue.add(b);
             queued += b.length;
             notifyAll();
+            return true;
         }
 
         synchronized void eof() {
@@ -846,21 +874,82 @@ final class HeadlessConnection implements Runnable {
         }
     }
 
-    private Thread pump(InputStream src, int type, String name) {
-        Thread t = new Thread(() -> {
+    /** How long an exec's output pipe may sit silent, once it exited, before EXIT. */
+    private static final long DRAIN_IDLE_MS = 2000;
+
+    /** Set (under {@code out}) when the exec's EXIT is sent; the pumps stop there. */
+    private boolean execEnded;
+
+    /** Copies one exec output pipe to the client as frames, until EOF or EXIT. */
+    private final class Pump implements Runnable {
+        final InputStream src;
+        final int type;
+        final Thread thread;
+        /** When the pump last went into read(); 0 while it is not in read(). */
+        private volatile long readingSince;
+
+        Pump(InputStream src, int type, String name) {
+            this.src = src;
+            this.type = type;
+            thread = new Thread(this, name);
+            thread.setDaemon(true);
+            thread.start();
+        }
+
+        @Override
+        public void run() {
             byte[] buf = new byte[16384];
             try {
-                int n;
-                while ((n = src.read(buf)) >= 0) {
-                    if (n > 0) out.frame(type, buf, 0, n);
+                while (true) {
+                    readingSince = SystemClock.uptimeMillis();
+                    int n = src.read(buf);
+                    readingSince = 0;
+                    if (n < 0) return;
+                    if (n == 0) continue;
+                    synchronized (out) {
+                        if (execEnded) return;
+                        out.frame(type, buf, 0, n);
+                    }
                 }
             } catch (IOException ignored) {
+            } finally {
+                readingSince = 0;
             }
-        }, name);
-        t.setDaemon(true);
-        t.start();
-        return t;
+        }
+
+        /**
+         * Still moving output: alive, and either busy (a write to a client
+         * that reads slowly) or not yet silent in read() for the drain bound.
+         */
+        boolean busy() {
+            if (!thread.isAlive()) return false;
+            long since = readingSince;
+            return since == 0 || SystemClock.uptimeMillis() - since < DRAIN_IDLE_MS;
+        }
     }
+
+    /**
+     * Whether the client hung up, polled rather than read: the exec frame
+     * loop can be waiting for stdin room, with nobody reading the socket.
+     */
+    private boolean peerHungUp() {
+        if (closed) return true;
+        FileDescriptor fd = sock.getFileDescriptor();
+        if (fd == null) return true;
+        StructPollfd pfd = new StructPollfd();
+        pfd.fd = fd;
+        pfd.events = (short) (OsConstants.POLLHUP | POLLRDHUP);
+        try {
+            if (Os.poll(new StructPollfd[] {pfd}, 0) <= 0) return false;
+        } catch (ErrnoException e) {
+            return false;
+        }
+        return (pfd.revents & (OsConstants.POLLHUP | POLLRDHUP | OsConstants.POLLERR
+                | OsConstants.POLLNVAL)) != 0;
+    }
+
+    /** Linux's POLLRDHUP (the peer shut its writing side); OsConstants lacks it. */
+    private static final int POLLRDHUP = 0x2000;
 
     private static void join(Thread t, long ms) {
         try {
@@ -1030,13 +1119,19 @@ final class HeadlessConnection implements Runnable {
         }
     }
 
-    /** Reads the request line byte by byte, so no frame bytes are consumed. */
+    /**
+     * Reads the request line byte by byte, so no frame bytes are consumed.
+     * Null at EOF, or after answering a line over {@link #MAX_LINE} with an error.
+     */
     private String readLine() throws IOException {
         ByteArrayOutputStream b = new ByteArrayOutputStream();
         int c;
         while ((c = in.read()) >= 0) {
             if (c == '\n') break;
-            if (b.size() >= MAX_LINE) throw new IOException("request line too long");
+            if (b.size() >= MAX_LINE) {
+                error("request line too long (max " + MAX_LINE + " bytes)");
+                return null;
+            }
             b.write(c);
         }
         if (c < 0 && b.size() == 0) return null;
