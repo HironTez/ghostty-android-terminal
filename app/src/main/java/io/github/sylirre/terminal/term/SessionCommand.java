@@ -4,7 +4,9 @@
 package io.github.sylirre.terminal.term;
 
 import android.content.Context;
+import android.util.Log;
 
+import java.io.IOException;
 import java.util.LinkedHashMap;
 
 /**
@@ -13,6 +15,8 @@ import java.util.LinkedHashMap;
  * Built by {@link #androidShell} or {@link UserlandRootfs#command}.
  */
 public final class SessionCommand {
+
+    private static final String TAG = "SessionCommand";
 
     /** execve() path; null means "enter arm64chroot_main() with argv". */
     public final String cmd;
@@ -34,12 +38,9 @@ public final class SessionCommand {
         this.userland = userland;
     }
 
-    /**
-     * /system/bin/sh with PATH=/system/bin. HOME and the initial working
-     * directory are the app files dir (the only generally writable place);
-     * TMPDIR is the cache dir.
-     */
-    public static SessionCommand androidShell(Context context) {
+    /** /system/bin/sh with bundled Android tools before the system toolbox.
+     * HOME/cwd remain the private files directory; TMPDIR is the cache. */
+    public static SessionCommand androidShell(Context context) throws IOException {
         return androidShell(context, new String[0], new String[0], null);
     }
 
@@ -47,14 +48,25 @@ public final class SessionCommand {
      * /system/bin/sh with {@code shArgs} after argv[0] (e.g. {@code -c script}),
      * {@code extraEnv} ({@code NAME=value}) appended to the default environment,
      * started in {@code cwd} (null: the files directory). The headless API's
-     * Android-shell spawn and exec.
+     * Android-shell spawn and exec. Every Android-shell caller goes through
+     * this Context factory so the bundled tools are always prepared and on PATH.
+     * If preparing them fails (android-bin clobbered, disk full, a missing
+     * tool) the shell still opens with the system toolbox alone: this is the
+     * app's last-resort session and must not depend on the bundle.
      */
     public static SessionCommand androidShell(Context context,
-            String[] shArgs, String[] extraEnv, String cwd) {
+            String[] shArgs, String[] extraEnv, String cwd) throws IOException {
         String homeDir = context.getFilesDir().getAbsolutePath();
         String tmpDir = context.getCacheDir().getAbsolutePath();
+        String path = "/system/bin";
+        try {
+            path = AndroidShellTools.prepare(context).getAbsolutePath() + ":" + path;
+        } catch (IOException e) {
+            Log.w(TAG, "Bundled Android tools unavailable; PATH=" + path, e);
+        }
         String[] base = {
-                "PATH=/system/bin",
+                "PATH=" + path,
+                "SHELL=/system/bin/sh",
                 "HOME=" + homeDir,
                 "TMPDIR=" + tmpDir,
                 "TERM=xterm-256color",

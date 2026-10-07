@@ -63,8 +63,10 @@ committed per ABI so app builds need only the Android SDK/NDK, not Zig.
 ### libterm.so (JNI glue)
 
 - `pty_jni.c`: `posix_openpt` + `fork` + `execve("/system/bin/sh")` with a
-  minimal environment (`PATH=/system/bin`, `TERM=xterm-256color`,
-  `HOME=<app files dir>`). The child becomes session leader and sets the PTY
+  minimal environment (`PATH=<files>/android-bin:/system/bin`,
+  `TERM=xterm-256color`, `HOME=<app files dir>`). `android-bin` holds
+  symlinks to the bundled BusyBox/OpenSSH executables that the installer
+  extracts to `nativeLibraryDir` ([android-shell-tools.md](android-shell-tools.md)). The child becomes session leader and sets the PTY
   as controlling TTY. The master fd is returned to Java, which wraps it in a
   `ParcelFileDescriptor` so reads/writes are plain Java streams.
 - `terminal_jni.c`: thin wrappers over the libghostty-vt calls above. One
@@ -120,8 +122,10 @@ arm64→x86_64) hosts. The integration:
    emulator: a guest `execve` is an *in-process ELF reload*, not a host
    `execve`, so no host binary is ever run. That sidesteps Android's W^X rule
    (targetSdk ≥ 29 cannot `execve()` under app data) with no loader trick at
-   all — the old `libproot-loader.so` / `useLegacyPackaging` machinery is
-   gone. The `--jit` code cache is W^X-aware: RWX anon → `memfd` dual-map under
+   all — the old `libproot-loader.so` machinery is gone. (`useLegacyPackaging`
+   is on again solely for the plain Android shell's bundled BusyBox/OpenSSH
+   executables, which the installer extracts to `nativeLibraryDir`; see
+   [android-shell-tools.md](android-shell-tools.md).) The `--jit` code cache is W^X-aware: RWX anon → `memfd` dual-map under
    SELinux `execmem` → interpreter fallback.
 3. **The rootfs is an optional APK asset — one per bundled distro.**
    Tarballs named `<id>_<version>_aarch64_rootfs.tar.xz` (produced by

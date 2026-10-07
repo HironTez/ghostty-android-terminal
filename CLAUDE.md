@@ -18,7 +18,9 @@ the app and installs the chosen distro. A third session type runs a whole
 init, real root) from optional, gitignored `VmImages/` assets — an EDK2
 firmware and a bootable aarch64 ISO fetched by `scripts/fetch-vm-images.sh`;
 its tabs are guest terminals, not processes. Also `/system/bin/sh` with
-`PATH=/system/bin`; session tabs; extra-keys toolbar above the soft keyboard.
+bundled BusyBox + OpenSSH clients on `PATH` (installer-extracted
+`lib*.so` PIE executables behind `files/android-bin` symlinks;
+docs/android-shell-tools.md); session tabs; extra-keys toolbar above the soft keyboard.
 minSdk 29, targetSdk 36, ABIs arm64-v8a + x86_64.
 
 Docs: [docs/architecture.md](docs/architecture.md) (design, data flow, key
@@ -161,10 +163,9 @@ thread → `TerminalView` pulls a fresh `ScreenSnapshot` in `onDraw`.
   `execve` is an in-process reload, so no host binary is ever exec'd. It is
   linked into libterm.so and entered via `arm64chroot_main()` in the fork()ed
   PTY child (`pty_jni.c`), which `_exit()`s its return. There is no loader and
-  no `PROOT_*` environment; the old loader packaging (`useLegacyPackaging`) is
-  gone. `--jit` is W^X-aware: its code cache tries RWX anon, falls back to a
-  `memfd` dual-map under SELinux `execmem`, then to the interpreter — safe to
-  leave on.
+  no `PROOT_*` environment; the old proot loader is gone.
+  (`useLegacyPackaging` is back, but only so the installer extracts the
+  bundled Android shell tools — plain-shell executables, never the userland.)
 - **arm64chroot's `--jit` is W^X-aware.** Its code cache tries RWX anon,
   falls back to a `memfd` dual-map under SELinux `execmem`, then to the
   interpreter — so `--jit` is safe to leave on across devices.
@@ -195,7 +196,8 @@ thread → `TerminalView` pulls a fresh `ScreenSnapshot` in `onDraw`.
   machine per class, and skips itself when no `VmImages/` are bundled),
   `HeadlessApiTest` (in-process LocalSocket client against the headless
   server; plain sh, the userland exec case skips without a rootfs),
-  `TerminalUiTest`
+  `AndroidShellToolsTest` (bundled BusyBox/OpenSSH through the real app PTY;
+  no network), `TerminalUiTest`
   (ActivityScenario + Espresso; launches with
   `MainActivity.EXTRA_FORCE_SHELL` so it always tests plain sh and never
   sees onboarding), `TerminalInputFieldUiTest` (Espresso, the Aa draft

@@ -115,6 +115,12 @@ made of regular files, directories and links only.
   field above the toolbar for autocorrect, swipe typing and editing before
   anything reaches the terminal; **Send** pastes it, **Run** pastes it and
   presses Enter. See [docs/input-field.md](docs/input-field.md).
+- **Android shell tools**: the plain Android shell (and headless `exec`)
+  has BusyBox 1.37.0 applets plus OpenSSH 10.5p1 `ssh`, `scp`, `sftp` and
+  `ssh-keygen` on `PATH` without any rootfs; keys and config live in
+  `$HOME/.ssh` (the app's files dir). No `sshd`. Licenses and BusyBox's
+  corresponding source ship in the APK. See
+  [docs/android-shell-tools.md](docs/android-shell-tools.md).
 - **Userland**: you are (fake) root; `apk add …` (Alpine) or
   `apt update && apt install …` (Debian) works. Networking uses the app's
   permissions; everything actually runs as the app's unprivileged uid.
@@ -151,6 +157,8 @@ See [docs/testing.md](docs/testing.md).
 - [docs/testing.md](docs/testing.md) — test suites and how to run them
 - [docs/headless-api.md](docs/headless-api.md) — headless ADB control API,
   device setup, `scripts/gterm`
+- [docs/android-shell-tools.md](docs/android-shell-tools.md) — bundled
+  BusyBox/OpenSSH: packaging, rebuilding, patches, licensing
 - [docs/input-field.md](docs/input-field.md) — the Aa draft input field
 
 ## License
