@@ -854,12 +854,6 @@ public class TerminalView extends View {
                 .edit().putFloat(PREF_FONT_SP, fontSizeSp).apply();
     }
 
-    /**
-     * Sets left and right text margins in pixels. The grid is narrowed by the
-     * combined margin so the terminal never renders text into the margin area.
-     * Useful on devices where a few pixels of the screen edge are hidden by the
-     * case.
-     */
     /** Sets the theme background painted while no snapshot is available. */
     public void setDefaultBackground(int color) {
         int opaque = color | 0xFF000000;
@@ -868,6 +862,12 @@ public class TerminalView extends View {
         invalidate();
     }
 
+    /**
+     * Sets left and right text margins in pixels. The grid is narrowed by the
+     * combined margin so the terminal never renders text into the margin area.
+     * Useful on devices where a few pixels of the screen edge are hidden by the
+     * case.
+     */
     public void setTextMargins(int leftPx, int rightPx) {
         textMarginLeft = leftPx;
         textMarginRight = rightPx;
@@ -2242,15 +2242,15 @@ public class TerminalView extends View {
         };
     }
 
-    /**
-     * Enables/disables rich (composing-mode) soft input and recreates the
-     * input connection so an open keyboard switches modes immediately.
-     */
     /** Controls whether tapping the terminal raises the soft keyboard. */
     public void setTouchKeyboardEnabled(boolean enabled) {
         touchKeyboardEnabled = enabled;
     }
 
+    /**
+     * Enables/disables rich (composing-mode) soft input and recreates the
+     * input connection so an open keyboard switches modes immediately.
+     */
     public void setRichKeyboard(boolean enabled) {
         if (richKeyboardEnabled == enabled) return;
         richKeyboardEnabled = enabled;

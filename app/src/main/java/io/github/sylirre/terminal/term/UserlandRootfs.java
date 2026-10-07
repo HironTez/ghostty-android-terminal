@@ -471,13 +471,6 @@ public final class UserlandRootfs {
     }
 
     /**
-     * Validates a guest-absolute directory path against the installed rootfs:
-     * returns it (trimmed) when it is absolute, free of {@code ".."} escapes,
-     * and names an existing directory inside the rootfs; otherwise {@code null}
-     * so the caller falls back to a derived default. A null/empty or relative
-     * path is rejected — only absolute paths within the rootfs are allowed.
-     */
-    /**
      * Whether {@code path} names an existing directory inside the installed
      * rootfs, by the same rules as the Working-directory setting. For callers
      * that must refuse a bad directory instead of falling back (headless cwd).
@@ -486,6 +479,13 @@ public final class UserlandRootfs {
         return guestDir(dir(ctx), path) != null;
     }
 
+    /**
+     * Validates a guest-absolute directory path against the installed rootfs:
+     * returns it (trimmed) when it is absolute, free of {@code ".."} escapes,
+     * and names an existing directory inside the rootfs; otherwise {@code null}
+     * so the caller falls back to a derived default. A null/empty or relative
+     * path is rejected — only absolute paths within the rootfs are allowed.
+     */
     private static String guestDir(File root, String path) {
         if (path == null) return null;
         String p = path.trim();

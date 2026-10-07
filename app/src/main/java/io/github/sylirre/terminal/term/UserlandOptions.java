@@ -80,14 +80,6 @@ public final class UserlandOptions {
     }
 
     /**
-     * Options matching the {@code AppSettings} first-use defaults, so a caller
-     * that only has a login shell — the convenience {@link UserlandRootfs#command
-     * command(Context, String)} overload and the tests — reproduces the historical
-     * behavior: root identity ({@code 0:0}), {@code /root} home, a home-derived
-     * working directory, the {@code C.UTF-8} locale, the {@link #DEFAULT_PATH}
-     * search path, no storage binding, and JIT enabled with a 32 MiB cache.
-     */
-    /**
      * A copy that runs {@code command} (exact guest argv) instead of the login
      * shell, in {@code workDir} when non-null (else this copy's setting), with
      * {@code extraEnv} ({@code NAME=value}) added to the guest environment.
@@ -100,6 +92,14 @@ public final class UserlandOptions {
                 extraEnv != null ? extraEnv : new String[0]);
     }
 
+    /**
+     * Options matching the {@code AppSettings} first-use defaults, so a caller
+     * that only has a login shell — the convenience {@link UserlandRootfs#command
+     * command(Context, String)} overload and the tests — reproduces the historical
+     * behavior: root identity ({@code 0:0}), {@code /root} home, a home-derived
+     * working directory, the {@code C.UTF-8} locale, the {@link #DEFAULT_PATH}
+     * search path, no storage binding, and JIT enabled with a 32 MiB cache.
+     */
     public static UserlandOptions defaults(String loginShell) {
         return new UserlandOptions(loginShell, false, "0:0", "/root", "",
                 "C.UTF-8", DEFAULT_PATH, true, 32, false);

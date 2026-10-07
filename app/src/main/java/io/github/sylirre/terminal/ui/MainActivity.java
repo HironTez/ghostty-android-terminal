@@ -129,14 +129,14 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
     private String appliedBackgroundPath;
     private int appliedBackgroundBlur = -1;
 
+    /** The sessions the tab strip currently shows, in order (see {@link #tabAt}). */
+    private List<TerminalSession> tabSessions = new ArrayList<>();
+
     /**
      * Sessions added or removed behind this Activity's back — by the headless
      * API, or reaped after exiting with no listener. Adopts new ones as tabs
      * and moves off a current session that is gone.
      */
-    /** The sessions the tab strip currently shows, in order (see {@link #tabAt}). */
-    private List<TerminalSession> tabSessions = new ArrayList<>();
-
     private final Runnable onSessionsChanged = () -> {
         if (isFinishing() || isDestroyed()) return;
         for (TerminalSession s : sessions.sessions()) {
