@@ -279,21 +279,41 @@ public class AndroidShellToolsTest {
     }
 
     @Test
-    public void upgradeRefreshesManagedLinksAndPreservesRegularFiles() throws Exception {
+    public void upgradeRefreshesManagedLinksAndPreservesUserFiles() throws Exception {
         File bin = AndroidShellTools.prepare(context);
+        // An earlier install's nativeLibraryDir: same install root and
+        // package directory shape, a different per-install suffix.
+        File current = new File(nativeDir());
+        String path = current.getPath();
+        String obsolete = path.substring(0, path.indexOf("/app/") + 5) + "~~obsolete==/"
+                + context.getPackageName() + "-obsolete==/lib/" + current.getName();
         File ssh = new File(bin, "ssh");
         Files.delete(ssh.toPath());
-        Os.symlink("/obsolete-install/libssh.so", ssh.getPath());
+        Os.symlink(obsolete + "/libssh.so", ssh.getPath());
         AndroidShellTools.prepare(context);
         assertEquals(nativeDir() + "/libssh.so", Os.readlink(ssh.getPath()));
-        // A dropped applet and a crash-leftover pending link are pruned.
+        // A dropped applet and a crash-leftover pending link are pruned...
         File dropped = new File(bin, "dropped-applet");
         File pending = new File(bin, ".scp.0000");
-        Os.symlink("/obsolete-install/libbusybox.so", dropped.getPath());
-        Os.symlink("/obsolete-install/libscp.so", pending.getPath());
-        AndroidShellTools.prepare(context);
-        assertFalse(new File(bin, "dropped-applet").exists() || isLink(dropped));
-        assertFalse(isLink(pending));
+        Os.symlink(obsolete + "/libbusybox.so", dropped.getPath());
+        Os.symlink(obsolete + "/libscp.so", pending.getPath());
+        // ...but a user's own links to a same-named file elsewhere are not.
+        File userLink = new File(bin, "user-applet");
+        Os.symlink("/some/path/libbusybox.so", userLink.getPath());
+        try {
+            AndroidShellTools.prepare(context);
+            assertFalse(isLink(dropped));
+            assertFalse(isLink(pending));
+            assertEquals("/some/path/libbusybox.so", Os.readlink(userLink.getPath()));
+            Files.delete(ssh.toPath());
+            Os.symlink("/some/path/libssh.so", ssh.getPath());
+            AndroidShellTools.prepare(context);
+            assertEquals("/some/path/libssh.so", Os.readlink(ssh.getPath()));
+        } finally {
+            Files.deleteIfExists(userLink.toPath());
+            Files.deleteIfExists(ssh.toPath());
+            AndroidShellTools.prepare(context);
+        }
         Files.delete(ssh.toPath());
         write(ssh, "user-file");
         try {

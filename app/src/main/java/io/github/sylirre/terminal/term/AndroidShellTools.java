@@ -61,12 +61,13 @@ public final class AndroidShellTools {
                 throw new IOException("Cannot create tool alias directory: " + bin);
             }
             Os.chmod(bin.getPath(), 0700);
+            String pkg = context.getPackageName();
             for (String client : CLIENTS) {
-                alias(bin, client, new File(nativeDir, "lib" + client + ".so"));
+                alias(bin, client, new File(nativeDir, "lib" + client + ".so"), nativeDir, pkg);
             }
             File busybox = new File(nativeDir, "libbusybox.so");
-            for (String applet : APPLETS) alias(bin, applet, busybox);
-            pruneStale(bin);
+            for (String applet : APPLETS) alias(bin, applet, busybox, nativeDir, pkg);
+            pruneStale(bin, nativeDir, pkg);
         } catch (ErrnoException e) {
             throw new IOException("Preparing Android shell tools", e);
         }
@@ -78,7 +79,8 @@ public final class AndroidShellTools {
      * or an earlier install's nativeLibraryDir — are replaced. A user's own
      * file, or a symlink they pointed elsewhere, is left alone.
      */
-    private static void alias(File bin, String name, File target) throws ErrnoException {
+    private static void alias(File bin, String name, File target, File nativeDir,
+            String pkg) throws ErrnoException {
         File link = new File(bin, name);
         try {
             if (!OsConstants.S_ISLNK(Os.lstat(link.getPath()).st_mode)) {
@@ -87,7 +89,7 @@ public final class AndroidShellTools {
             }
             String current = Os.readlink(link.getPath());
             if (current.equals(target.getAbsolutePath())) return;
-            if (!bundledTargets().contains(new File(current).getName())) {
+            if (!isManagedTarget(current, nativeDir, pkg)) {
                 Log.w(TAG, "Not replacing user symlink " + link + " -> " + current);
                 return;
             }
@@ -114,14 +116,35 @@ public final class AndroidShellTools {
     }
 
     /**
+     * Whether a symlink target is one this class created: a bundled executable
+     * inside this app's nativeLibraryDir — the current one, or an earlier
+     * install's of the same shape (same install root, this package's
+     * directory, ending in {@code /lib/<abi>}). A user's own link to a copy of
+     * libbusybox.so elsewhere is not managed.
+     */
+    private static boolean isManagedTarget(String target, File nativeDir, String pkg) {
+        File file = new File(target);
+        String dir = file.getParent();
+        if (dir == null || !bundledTargets().contains(file.getName())) return false;
+        String current = nativeDir.getAbsolutePath();
+        if (dir.equals(current)) return true;
+        if (dir.contains("/../") || dir.contains("/./")) return false;
+        int app = current.indexOf("/app/");
+        String root = app >= 0 ? current.substring(0, app + 5) : "/data/app/";
+        return dir.startsWith(root)
+                && dir.contains("/" + pkg + "-")
+                && dir.endsWith("/lib/" + nativeDir.getName());
+    }
+
+    /**
      * Removes managed symlinks an update no longer provides (an applet dropped
      * from the curated list) and pending links left by a crash mid-refresh.
-     * Only symlinks that point at one of the bundled executables are touched.
+     * Only symlinks into an app nativeLibraryDir
+     * ({@link #isManagedTarget}) are touched.
      */
-    private static void pruneStale(File bin) {
+    private static void pruneStale(File bin, File nativeDir, String pkg) {
         Set<String> managed = new HashSet<>(Arrays.asList(CLIENTS));
         managed.addAll(Arrays.asList(APPLETS));
-        Set<String> targets = bundledTargets();
         String[] names = bin.list();
         if (names == null) return;
         for (String name : names) {
@@ -129,7 +152,7 @@ public final class AndroidShellTools {
             String path = new File(bin, name).getPath();
             try {
                 if (!OsConstants.S_ISLNK(Os.lstat(path).st_mode)) continue;
-                if (targets.contains(new File(Os.readlink(path)).getName())) Os.remove(path);
+                if (isManagedTarget(Os.readlink(path), nativeDir, pkg)) Os.remove(path);
             } catch (ErrnoException e) {
                 Log.w(TAG, "Pruning " + path, e);
             }
