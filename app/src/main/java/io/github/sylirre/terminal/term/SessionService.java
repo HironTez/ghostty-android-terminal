@@ -288,7 +288,16 @@ public final class SessionService extends Service {
                 if (wake) acquireWakeLock();
                 startForeground(); // reflect the wake lock in the notification
             } catch (java.io.IOException e) {
-                Log.e(TAG, "headless server failed to start", e);
+                Log.e(TAG, "headless server failed to start: " + e.getMessage(), e);
+                if (SessionManager.get().isEmpty()) {
+                    // Nothing left to keep the process up for: no lingering
+                    // "0 sessions" notification. (gterm start finds the
+                    // reason in the log once the dump is gone with us.)
+                    releaseWakeLock();
+                    stopForeground(STOP_FOREGROUND_REMOVE);
+                    stopSelf();
+                    return START_NOT_STICKY;
+                }
             }
         }
         // Sticky only in headless mode, where a restart restores reachability.

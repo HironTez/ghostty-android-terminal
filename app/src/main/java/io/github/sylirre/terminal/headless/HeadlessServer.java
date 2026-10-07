@@ -178,6 +178,12 @@ public final class HeadlessServer {
             }
             HeadlessConnection c = new HeadlessConnection(context, sock, this);
             synchronized (connections) {
+                // Checked again under the lock shutdown() takes to copy the
+                // set: a connection added after that copy would outlive stop.
+                if (stopped) {
+                    closeQuietly(sock);
+                    break;
+                }
                 if (connections.size() >= MAX_CONNECTIONS) {
                     Log.w(TAG, "too many connections; dropping one");
                     closeQuietly(sock);
