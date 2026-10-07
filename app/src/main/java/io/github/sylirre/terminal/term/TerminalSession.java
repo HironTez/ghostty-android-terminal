@@ -97,7 +97,8 @@ public final class TerminalSession {
          * The session is being closed. A tap whose client stopped reading
          * holds the reader thread in {@link #onOutput} (back-pressure), which
          * would keep the closed session and its emulator alive; it should let
-         * go of that client if the end is not delivered soon. Must not block.
+         * go of that client if the end is not delivered soon. Must not block,
+         * and may be called more than once.
          */
         default void onClosing() {
         }
@@ -420,13 +421,16 @@ public final class TerminalSession {
      *     {@link #resizeExternal} changes the size; a deferred UI size is
      *     applied when the tap detaches.</li>
      * </ul>
-     * Attaching to a session that already ended reports the end at once.
+     * Attaching to a session that already ended reports the end at once; to
+     * one already closing, {@link OutputTap#onClosing}.
      */
     public OutputTap setTap(OutputTap t) {
         OutputTap prev;
+        boolean wasClosed;
         synchronized (sizeLock) {
             prev = tap;
             tap = t;
+            wasClosed = closed;
         }
         if (t == null) {
             applyPendingUiSize();
@@ -440,6 +444,10 @@ public final class TerminalSession {
             // May also be reported by endTap racing with this: taps must
             // tolerate a second onEnd (Attachment ignores it).
             if (e) t.onEnd(code);
+            // close() warns only the tap it found; one set just after would
+            // otherwise never hear it, and could hold the reader for good.
+            // (close() may have seen this one too: onClosing must be repeatable.)
+            else if (wasClosed) t.onClosing();
         }
         return prev;
     }
@@ -472,10 +480,11 @@ public final class TerminalSession {
     private void waitLoop() {
         int code = TerminalNative.processWaitFor(pid);
         exitCode = code;
-        post(l -> l.onExited(this, code));
         // Let the reader drain what the child wrote before it exited, so a tap
         // sees all the output before the end. Bounded: a background process
-        // that inherited the tty can hold it open indefinitely.
+        // that inherited the tty can hold it open indefinitely. Only then tell
+        // the listeners: the reaper closes the session, and with it the PTY,
+        // which would cut the drain short and lose a headless client the tail.
         Thread reader = readerThread;
         if (reader != null) {
             try {
@@ -483,6 +492,9 @@ public final class TerminalSession {
             } catch (InterruptedException ignored) {
             }
         }
+        // Before endTap, which can block on a client that stopped reading:
+        // the UI must hear about the exit regardless.
+        post(l -> l.onExited(this, code));
         endTap(code);
     }
 
