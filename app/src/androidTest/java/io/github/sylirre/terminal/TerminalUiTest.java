@@ -25,19 +25,26 @@ import static io.github.sylirre.terminal.TestUtil.waitFor;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.util.Log;
+import android.view.ActionMode;
 import android.view.InputDevice;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.Window;
 import android.view.WindowManager;
 
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
+import androidx.test.espresso.NoMatchingRootException;
 import androidx.test.espresso.UiController;
 import androidx.test.espresso.ViewAction;
 import androidx.test.espresso.action.GeneralClickAction;
@@ -52,6 +59,8 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -75,8 +84,11 @@ import io.github.sylirre.terminal.ui.TerminalView;
 public class TerminalUiTest {
 
     private static final long TIMEOUT_MS = 15_000;
+    private static final String TAG = "TerminalUiTest";
 
     private ActivityScenario<MainActivity> scenario;
+    /** The live floating ActionMode, captured by {@link #watchActionModes}. */
+    private final AtomicReference<ActionMode> floatingMode = new AtomicReference<>();
 
     @Before
     public void launch() {
@@ -150,6 +162,7 @@ public class TerminalUiTest {
                 s.emulator.snapshot(snap);
                 sb.append(" dims=").append(snap.cols).append('x').append(snap.rows);
                 sb.append("\nscreen:[").append(snap.text().trim()).append(']');
+                sb.append(" selection:[").append(s.emulator.selectionText()).append(']');
             }
             sb.append(" newTabShown=").append(
                     viewShown(a.findViewById(R.id.tabs), R.string.tab_new_description));
@@ -245,9 +258,11 @@ public class TerminalUiTest {
     public void typedCommandRunsInShell() {
         waitFor("shell prompt", TIMEOUT_MS, () -> currentScreen().contains("$"),
                 this::diagnose);
-        dispatchText("echo ui-roundtrip\n");
+        // The typed command line never contains the output text, so this
+        // passes only if the shell actually ran it.
+        dispatchText(printLine("ui-roundtrip"));
         waitFor("command output", TIMEOUT_MS,
-                () -> currentScreen().contains("ui-roundtrip"), this::diagnose);
+                () -> screenRowWith("ui-roundtrip") >= 0, this::diagnose);
     }
 
     @Test
@@ -474,6 +489,20 @@ public class TerminalUiTest {
         };
     }
 
+    /**
+     * A shell command line printing exactly {@code out} on a line of its own,
+     * whose own text never contains {@code out} (it is printed from two
+     * quoted halves). The command echo may soft-wrap anywhere — e.g. a 52-col
+     * phone where the 47-col prompt plus "echo " fills the row and pushes the
+     * argument alone onto the next row — and would otherwise be mistaken for
+     * the output by {@link #screenRowWith}. {@code out} must not contain '.
+     */
+    private static String printLine(String out) {
+        int mid = out.length() / 2;
+        return "printf '%s%s\\n' '" + out.substring(0, mid) + "' '"
+                + out.substring(mid) + "'\n";
+    }
+
     /** First screen row whose trimmed text equals exactly the given line. */
     private int screenRowWith(String exact) {
         AtomicInteger row = new AtomicInteger(-1);
@@ -490,6 +519,79 @@ public class TerminalUiTest {
             }
         });
         return row.get();
+    }
+
+    /**
+     * Records the floating ActionMode the activity window starts, by wrapping
+     * the window callback (the Activity) in a delegating proxy. Must run
+     * before the gesture that opens the selection toolbar.
+     */
+    private void watchActionModes() {
+        scenario.onActivity(a -> {
+            Window window = a.getWindow();
+            Window.Callback real = window.getCallback();
+            window.setCallback((Window.Callback) Proxy.newProxyInstance(
+                    Window.Callback.class.getClassLoader(),
+                    new Class<?>[] {Window.Callback.class},
+                    (proxy, method, args) -> {
+                        if ("onActionModeStarted".equals(method.getName())) {
+                            floatingMode.set((ActionMode) args[0]);
+                        } else if ("onActionModeFinished".equals(method.getName())) {
+                            floatingMode.compareAndSet((ActionMode) args[0], null);
+                        }
+                        try {
+                            return method.invoke(real, args);
+                        } catch (InvocationTargetException e) {
+                            throw e.getCause();
+                        }
+                    }));
+        });
+    }
+
+    /**
+     * Taps an item of the floating text-selection toolbar.
+     *
+     * <p>The toolbar is normally an in-app PopupWindow, and is tapped as
+     * such. Android 17 instead may render every app's floating toolbar
+     * remotely in SystemUI (SelectionToolbarRenderService, flag
+     * system_selection_toolbar_enabled), outside this process's window
+     * hierarchy, so Espresso cannot reach it; and where SystemUI is absent
+     * the service bind fails and nothing is rendered at all — for a stock
+     * EditText too (seen on headless API 37 devices). In that case
+     * the test proves the live ActionMode is a floating one offering this
+     * item, and selects the item through that ActionMode's own menu — the
+     * same dispatch a toolbar tap ends in (onActionItemClicked).
+     */
+    private void clickSelectionToolbarItem(int titleRes) {
+        String title = ApplicationProvider.getApplicationContext().getString(titleRes);
+        waitFor("floating selection ActionMode", TIMEOUT_MS,
+                () -> floatingMode.get() != null, this::diagnose);
+        try {
+            onView(withText(title)).inRoot(isPlatformPopup()).perform(click());
+            return;
+        } catch (NoMatchingRootException notInThisProcess) {
+            // Only Android 17 (API 37) draws the floating toolbar in SystemUI,
+            // out of Espresso's reach. Below that a missing in-app popup is a
+            // regression, and the menu fallback would hide it.
+            if (android.os.Build.VERSION.SDK_INT < 37) throw notInThisProcess;
+            Log.w(TAG, "selection toolbar is not an in-app popup; selecting \""
+                    + title + "\" through the live ActionMode menu");
+        }
+        scenario.onActivity(a -> {
+            ActionMode mode = floatingMode.get();
+            assertNotNull("selection ActionMode still active", mode);
+            assertEquals("selection toolbar is floating",
+                    ActionMode.TYPE_FLOATING, mode.getType());
+            Menu menu = mode.getMenu();
+            MenuItem item = null;
+            for (int i = 0; i < menu.size(); i++) {
+                if (title.contentEquals(menu.getItem(i).getTitle())) item = menu.getItem(i);
+            }
+            assertNotNull("selection toolbar offers \"" + title + "\"", item);
+            assertTrue(title + " is visible and enabled", item.isVisible() && item.isEnabled());
+            assertTrue(title + " handled by the toolbar callback",
+                    menu.performIdentifierAction(item.getItemId(), 0));
+        });
     }
 
     private String selectionText() {
@@ -529,8 +631,9 @@ public class TerminalUiTest {
 
     @Test
     public void longPressSelectsWordAndCopyFillsClipboard() {
+        watchActionModes();
         waitFor("shell prompt", TIMEOUT_MS, () -> currentScreen().contains("$"));
-        dispatchText("echo selectme123\n");
+        dispatchText(printLine("selectme123"));
         waitFor("echoed output line", TIMEOUT_MS,
                 () -> screenRowWith("selectme123") >= 0, this::diagnose);
 
@@ -539,8 +642,8 @@ public class TerminalUiTest {
         waitFor("word selected", TIMEOUT_MS,
                 () -> "selectme123".equals(selectionText()), this::diagnose);
 
-        // Copy lives on the floating selection toolbar (a popup window).
-        onView(withText("Copy")).inRoot(isPlatformPopup()).perform(click());
+        // Copy lives on the floating selection toolbar.
+        clickSelectionToolbarItem(android.R.string.copy);
         waitFor("clipboard filled", TIMEOUT_MS,
                 () -> "selectme123".equals(clipboardText()));
         waitFor("selection dismissed", TIMEOUT_MS, () -> !selectionActive());
@@ -549,7 +652,7 @@ public class TerminalUiTest {
     @Test
     public void longPressDragExtendsSelection() {
         waitFor("shell prompt", TIMEOUT_MS, () -> currentScreen().contains("$"));
-        dispatchText("echo aa bbbbbbbbbb\n");
+        dispatchText(printLine("aa bbbbbbbbbb"));
         waitFor("echoed output line", TIMEOUT_MS,
                 () -> screenRowWith("aa bbbbbbbbbb") >= 0, this::diagnose);
 
@@ -586,13 +689,28 @@ public class TerminalUiTest {
             public void perform(UiController uc, View view) {
                 float[] precision = Press.FINGER.describePrecision();
                 float[] p = cellCenterOnScreen(view, cx, cy);
+                // Inject one timestamped gesture sequence. Waiting for Espresso
+                // idle between taps also waits for selection-popup rendering;
+                // on a slow emulator that stretched the third tap past 300ms.
+                // Preserve real pointer injection and the same 30ms taps/60ms gaps.
+                List<MotionEvent> events = new ArrayList<>();
+                long start = android.os.SystemClock.uptimeMillis();
                 for (int i = 0; i < taps; i++) {
-                    MotionEvents.DownResultHolder down =
-                            MotionEvents.sendDown(uc, p, precision);
-                    uc.loopMainThreadForAtLeast(30); // brief, so it reads as a tap
-                    MotionEvents.sendUp(uc, down.down, p);
-                    if (i < taps - 1) uc.loopMainThreadForAtLeast(60); // within window
+                    long when = start + i * 90L;
+                    MotionEvent down = MotionEvent.obtain(when, when, MotionEvent.ACTION_DOWN,
+                            p[0], p[1], 1f, 1f, 0, precision[0], precision[1], 0, 0);
+                    down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                    events.add(down);
+                    events.add(MotionEvents.obtainUpEvent(down, when + 30L, p));
                 }
+                try {
+                    assertTrue("rapid pointer sequence injected", uc.injectMotionEventSequence(events));
+                } catch (androidx.test.espresso.InjectEventSecurityException e) {
+                    throw new AssertionError("cannot inject rapid pointer sequence", e);
+                } finally {
+                    for (MotionEvent event : events) event.recycle();
+                }
+                uc.loopMainThreadUntilIdle();
             }
         };
     }
@@ -600,7 +718,7 @@ public class TerminalUiTest {
     @Test
     public void doubleTapSelectsWord() {
         waitFor("shell prompt", TIMEOUT_MS, () -> currentScreen().contains("$"));
-        dispatchText("echo doubleme xyz\n");
+        dispatchText(printLine("doubleme xyz"));
         waitFor("echoed output line", TIMEOUT_MS,
                 () -> screenRowWith("doubleme xyz") >= 0, this::diagnose);
 
@@ -613,7 +731,7 @@ public class TerminalUiTest {
     @Test
     public void tripleTapSelectsLine() {
         waitFor("shell prompt", TIMEOUT_MS, () -> currentScreen().contains("$"));
-        dispatchText("echo tri one two\n");
+        dispatchText(printLine("tri one two"));
         waitFor("echoed output line", TIMEOUT_MS,
                 () -> screenRowWith("tri one two") >= 0, this::diagnose);
 
@@ -625,8 +743,9 @@ public class TerminalUiTest {
 
     @Test
     public void selectAllFromToolbarSelectsWholeBuffer() {
+        watchActionModes();
         waitFor("shell prompt", TIMEOUT_MS, () -> currentScreen().contains("$"));
-        dispatchText("echo firstline\n");
+        dispatchText(printLine("firstline"));
         waitFor("echoed output line", TIMEOUT_MS,
                 () -> screenRowWith("firstline") >= 0, this::diagnose);
 
@@ -637,7 +756,7 @@ public class TerminalUiTest {
 
         // "Select all" grows the selection past the single word and keeps the
         // toolbar up (so Copy is still reachable).
-        onView(withText("Select all")).inRoot(isPlatformPopup()).perform(click());
+        clickSelectionToolbarItem(android.R.string.selectAll);
         waitFor("selection grew to the whole buffer", TIMEOUT_MS,
                 () -> {
                     String s = selectionText();
@@ -648,6 +767,7 @@ public class TerminalUiTest {
 
     @Test
     public void pasteButtonTypesClipboardIntoShell() {
+        watchActionModes();
         waitFor("shell prompt", TIMEOUT_MS, () -> currentScreen().contains("$"));
         scenario.onActivity(a -> a.getSystemService(ClipboardManager.class)
                 .setPrimaryClip(ClipData.newPlainText("test", "pasted-xyz")));
@@ -658,7 +778,7 @@ public class TerminalUiTest {
         waitFor("selection active", TIMEOUT_MS, this::selectionActive,
                 this::diagnose);
 
-        onView(withText("Paste")).inRoot(isPlatformPopup()).perform(click());
+        clickSelectionToolbarItem(android.R.string.paste);
         // The pasted text is echoed on the shell's input line; it may
         // soft-wrap mid-word, so compare without line breaks.
         waitFor("clipboard text reaches the shell", TIMEOUT_MS,
@@ -671,7 +791,7 @@ public class TerminalUiTest {
     @Test
     public void searchBarFindsAndHighlightsToken() {
         waitFor("shell prompt", TIMEOUT_MS, () -> currentScreen().contains("$"));
-        dispatchText("echo searchtoken\n");
+        dispatchText(printLine("searchtoken"));
         waitFor("token on screen", TIMEOUT_MS,
                 () -> screenRowWith("searchtoken") >= 0, this::diagnose);
 
