@@ -1,0 +1,55 @@
+Android passwd/HOME wrappers and explicit_bzero fallback for OpenSSH 10.5p1.
+
+Copyright 2026 Sylirre. License: BSD-2-Clause (see Local-patches-LICENSE.txt).
+includes.h pulls in android-passwd.h (current-UID HOME and /system/bin/sh);
+explicit_bzero uses a volatile memset pointer because Bionic's bzero is not
+an exported function. The known_hosts backup change lives in 0003.
+
+--- a/includes.h
++++ b/includes.h
+@@ -24,6 +24,12 @@
+ 
+ #include <sys/types.h>
+ #include <sys/socket.h> /* For CMSG_* */
++#ifdef __ANDROID__
++/* Bionic attribute declarations must precede compatibility defines.h. */
++#include <unistd.h>
++#include <pwd.h>
++#include <stdlib.h>
++#endif
+ 
+ #ifdef HAVE_LIMITS_H
+ # include <limits.h> /* For PATH_MAX, _POSIX_HOST_NAME_MAX */
+@@ -196,4 +202,8 @@
+ 
+ #include "entropy.h"
+ 
++#ifdef __ANDROID__
++#include "android-passwd.h"
++#endif
++
+ #endif /* INCLUDES_H */
+--- a/openbsd-compat/explicit_bzero.c
++++ b/openbsd-compat/explicit_bzero.c
+@@ -36,10 +36,10 @@
+ #else /* HAVE_MEMSET_S */
+ 
+ /*
+- * Indirect bzero through a volatile pointer to hopefully avoid
++ * Indirect memset through a volatile pointer to hopefully avoid
+  * dead-store optimisation eliminating the call.
+  */
+-static void (* volatile ssh_bzero)(void *, size_t) = bzero;
++static void *(* volatile ssh_memset)(void *, int, size_t) = memset;
+ 
+ void
+ explicit_bzero(void *p, size_t n)
+@@ -61,7 +61,7 @@
+ # endif
+ #endif
+ 
+-	ssh_bzero(p, n);
++	ssh_memset(p, 0, n);
+ }
+ 
+ #endif /* HAVE_MEMSET_S */

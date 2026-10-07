@@ -1,0 +1,29 @@
+#!/bin/sh
+# Download only pinned upstream archives; verify cached archives too.
+# Optional arguments select components (default: every entry in sources.lock).
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+python3 - "$ROOT" "$@" <<'PY'
+import hashlib, json, pathlib, subprocess, sys
+root = pathlib.Path(sys.argv[1]) / 'native/android-tools'
+lock = json.loads((root / 'sources.lock').read_text())
+wanted = sys.argv[2:] or list(lock)
+unknown = set(wanted) - set(lock)
+if unknown:
+    raise SystemExit('not in sources.lock: ' + ' '.join(sorted(unknown)))
+cache = root / 'sources'
+cache.mkdir(exist_ok=True)
+for component in wanted:
+    source = lock[component]
+    path = cache / source['file']
+    if not path.exists():
+        partial = path.with_suffix(path.suffix + '.part')
+        subprocess.run(['curl', '--fail', '--location', '--retry', '3',
+                        source['url'], '-o', str(partial)], check=True)
+        if hashlib.sha256(partial.read_bytes()).hexdigest() != source['sha256']:
+            raise SystemExit('checksum mismatch: ' + str(partial))
+        partial.replace(path)
+    if hashlib.sha256(path.read_bytes()).hexdigest() != source['sha256']:
+        raise SystemExit('checksum mismatch: ' + str(path))
+    print(component + ': verified ' + source['sha256'])
+PY

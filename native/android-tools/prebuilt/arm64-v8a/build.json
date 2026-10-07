@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "ndk": "28.2.13676358",
+  "api": 29,
+  "abi": "arm64-v8a",
+  "outputs": {
+    "libbusybox.so": "2903b8bcc1656b3181f7bebc060c742f5a2253dc04bb8458870f55896c21a032",
+    "libssh.so": "9a9f76eab388de888eb2550d30f97a0a227b9c6a51f2e94d74b84745ce8a4650",
+    "libscp.so": "95e0b2f83817891a69c254bc1e1a27057b0f438447219025d9fd6543add52d51",
+    "libsftp.so": "38acedab809ff21ec59a10fa54316bb00e37407b0ce0a8b8a1125dff870146d0",
+    "libssh-keygen.so": "d3f99687822a552aed638b78f63d3d1b7c2f812c310689352fabd7e225f10aa9"
+  },
+  "sources": {
+    "busybox": {
+      "version": "1.37.0",
+      "sha256": "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
+    },
+    "openssl": {
+      "version": "3.5.9",
+      "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a"
+    },
+    "openssh": {
+      "version": "10.5p1",
+      "sha256": "d44d28a839ea9daf969cc69150fde59910b2b39361dad81a3bd6cbd19218db11"
+    }
+  },
+  "inputs": {
+    "native/android-tools/sources.lock": "2293c9de2d3b75eed2f839addc74c86c0d2afc20070705052100cf6770c44b5d",
+    "native/android-tools/busybox.config": "1e15ec9fb6a9d06623ac2bc707d5facc727894529bdd2c58fec4a001b09614a0",
+    "scripts/build-android-tools.sh": "511f8b1ae698bd67b3e8678f47fd8ef7255f65711eb78594e96679ad51e2ecf7",
+    "scripts/fetch-android-tools.sh": "822c183565dc8c5dce6642b6c5c2c2add20a24831cf7ade620c3f0c0b2c398cc",
+    "scripts/verify-android-tools.py": "1a36d166a31e7cac562ae2a76003fbd6bcd1e22e3a97ab4214c78667c1af01fc",
+    "scripts/bundle-busybox-source.py": "612ef9426f6a913f745a2f46df55c083dfeadf187d7988c29b5b58df2b27e707",
+    "scripts/android-tools-notices.py": "48041ee283145a23d152a4564f55777804be9202e6a86d7824b56eed7a2e26a6",
+    "native/android-tools/patches/busybox/0001-apk-name.patch": "2edcc5cdca59abc344a1df4026b899cb752dc75554440fc55017544baef3f43b",
+    "native/android-tools/patches/openssh/0001-android-home-and-bzero.patch": "641f6939adf46fdaac1eafacb5cda58abef03109c6dbc315a9612415c9b4856c",
+    "native/android-tools/patches/openssh/0002-android-public-resolver.patch": "c61bfd68124c91b8deddd2c91d77e12281209d7447876309a878c7a18dfda9a7",
+    "native/android-tools/patches/openssh/0003-atomic-known-hosts.patch": "486790df69072c23380aa6e80356ae0532fd390e95d6108a34f6ce8a97233a2c",
+    "native/android-tools/patches/openssh/android-known-hosts.h": "76b2bc8622ff08517c8df287bf599f13f3ae10835f254eb0d28cb405423958f9",
+    "native/android-tools/patches/openssh/android-passwd.h": "bbfc12e55bc5dfdbcdc707a718207b0bdefb77a6b39c524a340a50efc9bfdd29"
+  }
+}

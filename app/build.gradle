@@ -33,6 +33,16 @@ android {
         }
     }
 
+    // These lib*.so files are standalone PIE tools, not dlopen libraries.
+    // They must be extracted by the installer to an executable, read-only path.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+    sourceSets.main.jniLibs.srcDirs += rootProject.file("native/android-tools/prebuilt")
+    sourceSets.main.assets.srcDirs += rootProject.file("native/android-tools/licenses")
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -71,6 +81,100 @@ def vmImages = rootProject.file("VmImages")
 if (vmImages.isDirectory()) {
     android.sourceSets.main.assets.srcDirs += vmImages
 }
+
+// Shell tools are mandatory prebuilts, unlike optional rootfs/VM assets.
+// Fail before packaging rather than shipping a native-shell feature that
+// breaks, a binary from an unknown toolchain, or one whose recorded build
+// inputs (patches, scripts, configs, pinned source hashes) have since changed
+// without a rebuild. The ELF hardening checks themselves live in
+// scripts/verify-android-tools.py, which recorded these manifests.
+def verifyAndroidShellTools = tasks.register("verifyAndroidShellTools") {
+    def toolsDir = rootProject.file("native/android-tools")
+    def repoRoot = rootProject.projectDir
+    def pinnedNdk = android.ndkVersion
+    def pinnedApi = android.defaultConfig.minSdk
+    doLast {
+        def json = { file -> new groovy.json.JsonSlurper().parse(file) }
+        def sha256 = { file -> java.security.MessageDigest.getInstance("SHA-256")
+                .digest(file.bytes).encodeHex().toString() }
+        def fail = { msg -> throw new GradleException(msg) }
+        def lock = json(new File(toolsDir, "sources.lock"))
+        def patchFiles = []
+        new File(toolsDir, "patches").eachFileRecurse(groovy.io.FileType.FILES) { f ->
+            patchFiles << repoRoot.toPath().relativize(f.toPath()).toString().replace('\\', '/')
+        }
+        ["arm64-v8a", "x86_64"].each { abi ->
+            def dir = new File(toolsDir, "prebuilt/${abi}")
+            def manifestFile = new File(dir, "build.json")
+            if (!manifestFile.isFile()) {
+                fail("Missing Android tool manifest: ${manifestFile}; run scripts/build-android-tools.sh")
+            }
+            def manifest = json(manifestFile)
+            // Refuse manifests this build does not understand instead of
+            // guessing what a newer schema's fields mean.
+            if (manifest.schema != 1) fail("Unknown Android tool manifest schema ${manifest.schema} in ${manifestFile}")
+            if (manifest.ndk != pinnedNdk || manifest.api != pinnedApi || manifest.abi != abi) {
+                fail("${manifestFile} was built for NDK ${manifest.ndk}/API ${manifest.api}/${manifest.abi}, "
+                        + "expected ${pinnedNdk}/${pinnedApi}/${abi}")
+            }
+            ["busybox", "ssh", "scp", "sftp", "ssh-keygen"].each { cmd ->
+                def executable = new File(dir, "lib${cmd}.so")
+                if (!executable.isFile()) {
+                    fail("Missing Android tool: ${executable}; run scripts/build-android-tools.sh")
+                }
+                if (manifest.outputs[executable.name] != sha256(executable)) {
+                    fail("Android tool checksum mismatch: ${executable}")
+                }
+            }
+            if (manifest.outputs.size() != 5) fail("Unexpected outputs in ${manifestFile}")
+            if (manifest.sources.keySet() != lock.keySet()) fail("${manifestFile} sources differ from sources.lock")
+            lock.each { component, src ->
+                if (manifest.sources[component].sha256 != src.sha256
+                        || manifest.sources[component].version != src.version) {
+                    fail("${abi} tools were built from a different ${component} than sources.lock pins; rebuild")
+                }
+            }
+            manifest.inputs.each { path, expected ->
+                def input = new File(repoRoot, path)
+                if (!input.isFile() || sha256(input) != expected) {
+                    fail("Android tool build input changed since ${abi} was built: ${path}; "
+                            + "run scripts/build-android-tools.sh")
+                }
+            }
+            // A patch added since the build is an input the manifest never saw.
+            patchFiles.each { rel ->
+                if (!manifest.inputs.containsKey(rel)) {
+                    fail("Android tool build input not recorded for ${abi}: ${rel}; "
+                            + "run scripts/build-android-tools.sh")
+                }
+            }
+        }
+        def sourceArchive = new File(toolsDir, "licenses/busybox-corresponding-source.tar.xz")
+        def sourceManifest = new File(toolsDir, "licenses/busybox-source.json")
+        if (!sourceArchive.isFile() || !sourceManifest.isFile()) {
+            fail("Missing BusyBox corresponding source; run scripts/bundle-busybox-source.py")
+        }
+        def source = json(sourceManifest)
+        if (source.schema != 1) fail("Unknown BusyBox source manifest schema ${source.schema}")
+        if (sha256(sourceArchive) != source.archive) {
+            fail("BusyBox source archive checksum mismatch")
+        }
+        ["scripts/android-tools-notices.py", "scripts/build-android-tools.sh",
+         "native/android-tools/patches/busybox/0001-apk-name.patch"].each { required ->
+            if (!source.inputs.containsKey(required)) fail("BusyBox corresponding source lacks ${required}")
+        }
+        patchFiles.each { rel ->
+            if (!source.inputs.containsKey(rel)) fail("BusyBox corresponding source lacks ${rel}; run scripts/bundle-busybox-source.py")
+        }
+        source.inputs.each { path, expected ->
+            def input = new File(repoRoot, path)
+            if (!input.isFile() || sha256(input) != expected) {
+                fail("Stale BusyBox corresponding source: ${path}; run scripts/bundle-busybox-source.py")
+            }
+        }
+    }
+}
+tasks.named("preBuild").configure { dependsOn(verifyAndroidShellTools) }
 
 dependencies {
     // Pure-Java XZ decoder for the rootfs installer (tar parsing is local

@@ -64,6 +64,54 @@ License: Public domain (SPDX: 0BSD)
 Upstream: https://tukaani.org/xz/java.html
 
 ================================================================================
+Android shell tools (standalone executables; never linked into libterm.so)
+
+BusyBox 1.37.0 (locally modified; see below)
+Copyright: BusyBox authors and contributors; see the upstream source.
+License: GPL-2.0-only, with upstream per-file notices retained.
+Upstream: https://busybox.net/
+License: native/android-tools/licenses/BusyBox-LICENSE.txt
+Modification: one local patch (native/android-tools/patches/busybox/), dated
+2026-10-04, lets the binary dispatch under its APK name libbusybox.so; the
+patch adds a modified-file notice with that date to libbb/appletlib.c.
+Source offer (GPLv2 section 3(a)): every APK carries
+assets/busybox-corresponding-source.tar.xz (also in this repository at
+native/android-tools/licenses/), containing the unmodified upstream archive,
+the local patch, the curated and exact normalized configurations, and the
+fetch/build/verify/notice/bundle scripts with rebuild instructions. The
+target compiler (Android NDK r28c) and host build tools are not included;
+they are publicly available. The archive is reproducible (see
+scripts/bundle-busybox-source.py --check). A clean rebuild from the extracted
+archive was compared byte-for-byte with the shipped binaries; the result is
+recorded in docs/android-shell-tools.md. This notice is a description of
+what is shipped, not a legal opinion on compliance.
+BusyBox runs as a separate process, not a GPL library linked into this
+application.
+
+OpenSSH portable 10.5p1 (ssh, scp, sftp, ssh-keygen clients)
+Copyright: OpenSSH authors and contributors; upstream notices retained in LICENCE.
+License: BSD/ISC and other permissive licenses documented in upstream LICENCE.
+Upstream: https://www.openssh.com/
+License: native/android-tools/licenses/OpenSSH-LICENCE.txt
+Per-file notices: native/android-tools/licenses/OpenSSH-file-notices.txt
+These are locally modified Android client builds (HOME/passwd, shell,
+resolver, atomic known_hosts rewrite); patches in native/android-tools/patches/.
+
+OpenSSL 3.5.9 (static libcrypto in the OpenSSH executables only)
+Copyright: The OpenSSL Project Authors
+License: Apache-2.0
+Upstream: https://www.openssl.org/
+License: native/android-tools/licenses/OpenSSL-LICENSE.txt
+Per-file notices: native/android-tools/licenses/OpenSSL-file-notices.txt
+OpenSSL is not linked into BusyBox or libterm.so.
+
+Local compatibility patch notices and license texts:
+native/android-tools/licenses/Local-patches-LICENSE.txt
+All the listed shell-tool license texts are also distributed as APK assets.
+Pinned archives, checksums, config and patches: native/android-tools/
+Build and source distribution details: docs/android-shell-tools.md
+
+================================================================================
 Test-only dependencies (NOT distributed in the APK)
 
 The instrumented test suite uses AndroidX Test and Espresso, licensed under

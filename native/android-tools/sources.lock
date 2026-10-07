@@ -1,0 +1,23 @@
+{
+  "busybox": {
+    "version": "1.37.0",
+    "file": "busybox-1.37.0.tar.bz2",
+    "url": "https://busybox.net/downloads/busybox-1.37.0.tar.bz2",
+    "sha256": "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4",
+    "checksumSource": "https://busybox.net/downloads/busybox-1.37.0.tar.bz2.sha256"
+  },
+  "openssl": {
+    "version": "3.5.9",
+    "file": "openssl-3.5.9.tar.gz",
+    "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz",
+    "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a",
+    "checksumSource": "https://github.com/openssl/openssl/releases/tag/openssl-3.5.9"
+  },
+  "openssh": {
+    "version": "10.5p1",
+    "file": "openssh-10.5p1.tar.gz",
+    "url": "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.5p1.tar.gz",
+    "sha256": "d44d28a839ea9daf969cc69150fde59910b2b39361dad81a3bd6cbd19218db11",
+    "checksumSource": "https://www.openssh.com/txt/release-10.5"
+  }
+}

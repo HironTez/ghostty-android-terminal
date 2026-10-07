@@ -1,0 +1,6 @@
+# The Gradle preBuild gate hashes these build inputs byte for byte;
+# a CRLF checkout would fail it.
+native/android-tools/** -text
+scripts/*.sh text eol=lf
+scripts/*.py text eol=lf
+scripts/gterm text eol=lf
