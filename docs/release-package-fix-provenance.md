@@ -38,7 +38,7 @@ arm64-v8a 70978f2ee4837792497a3ab51fa3487e98037f2717444c0d7468f213e95ed502
 x86_64    bc4967ea66a3630f50a43444c4f5fd99d96a4ba837f37863c6eec8c3750956fd
 ```
 
-The recovered `android17-investigation/arm64chroot-v1.3.0/` files
+The recovered local copy `arm64chroot-v1.3.0/` files
 `src/path.c`, `src/sys_file.c`, `src/syscall.c`, `src/sys_net.c`, and
 `Makefile` each match **byte-for-byte** the actual release engine pin.
 Old `src/path.c` Git blob is `35043a77bdb9cac3df30c5cce5f56654d2d4d3b0`;
@@ -52,11 +52,12 @@ Upstream fix **`2c332ad47754f8d6cef74375a2f5b5ce5c3ad1b5`**, dated July 30,
 [Exact upstream patch](https://github.com/sylirre/arm64emu-user/commit/2c332ad47754f8d6cef74375a2f5b5ce5c3ad1b5).
 
 Verified Git ancestry: release pin is an ancestor of the fix; the fix is
-**not** an ancestor of the release pin; the fix **is** an ancestor of current
-app gitlink/native HEAD **`570ec1e0cd379592ca5d581a37f990618e9c85bf`**
-(`Version 1.5.0`). The first available containing engine tag is `v1.4.0`.
-The actual guard remains in current `src/path.c:849–869`; native working tree
-is clean.
+**not** an ancestor of the release pin; the fix **is** an ancestor of the
+app gitlink at the time of this research,
+**`570ec1e0cd379592ca5d581a37f990618e9c85bf`** (`Version 1.5.0`), and of the
+later pin `313e1d9` (HironTez/arm64emu-user fork) built on top of it. The
+first available containing engine tag is `v1.4.0`. At `570ec1e` the guard was
+in `src/path.c:849–869`.
 
 The separately investigated systemd v257.13 chain is:
 `write_temporary_group` → `copy_rights_with_fallback` →

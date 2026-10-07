@@ -20,8 +20,7 @@ All values below are SHA256:
 | Temporary 3.24.1 control APK | `fb0df6237d90261ed69a62b814b17dedb740c3eb03fece37f3d1c4ece8bf4696` |
 | Test APK, baseline/control/restored | `e0e0a73a45308c02e9e8195b8af1cb10f3b180fab2058a09a088ac211110f5e7` |
 
-The official APK was rehashed at
-`/home/v/dbx-homes/dev/android17-investigation/A-SH_v0.8.0.apk`.
+The official APK (`A-SH_v0.8.0.apk`) was rehashed locally.
 Its `assets/alpine_3.24.1_aarch64_rootfs.tar.xz` entry was extracted without
 repacking: **3,199,792 bytes**, hash verified, and byte-compared against the
 control APK entry. The original 3.24.2 asset (**3,203,368 bytes**, mode 0644)
@@ -38,19 +37,21 @@ entries are byte-identical to baseline and contain `Version: 1.5.0`:
 - arm64-v8a: `d8c11a2384d814ebbe676ad4f91f239d79e569006423f77a2aa9fc4746c364a8`
 - x86_64: `0dba2695c1a0646a6ac0fa0f2643c38b509331082cf8981d979f0949145c5f3b`
 
-Main HEAD remains `1c2fad1d56969c4ee6fd8d92b369bd6c59ebcdb4`; engine HEAD
-`570ec1e0cd379592ca5d581a37f990618e9c85bf` / v1.5.0 includes proc-fd fix
-`2c332ad47754f8d6cef74375a2f5b5ce5c3ad1b5`. The original engine was
-`b51064beb7e7dcbb60ff0a90cbb1b91abed48741` / v1.3.0.
+Measured at main `1c2fad1d56969c4ee6fd8d92b369bd6c59ebcdb4` with the arm64chroot
+engine pinned at `570ec1e0cd379592ca5d581a37f990618e9c85bf` / v1.5.0, which
+includes proc-fd fix `2c332ad47754f8d6cef74375a2f5b5ce5c3ad1b5`. The original
+engine was `b51064beb7e7dcbb60ff0a90cbb1b91abed48741` / v1.3.0. (The pin has
+since moved to `313e1d9`, built on top of `570ec1e`; these results were not
+re-measured there.)
 
 ## Build, installation and actual package results
 
-JDK21, SDK `/home/v/dbx-homes/dev/Android/Sdk`, both configured ABIs:
+JDK21, both configured ABIs:
 
 ```sh
-JAVA_HOME=/home/v/.sdkman/candidates/java/21.0.9-tem \
-ANDROID_HOME=/home/v/dbx-homes/dev/Android/Sdk \
-ANDROID_SDK_ROOT=/home/v/dbx-homes/dev/Android/Sdk \
+JAVA_HOME=$JAVA_HOME \
+ANDROID_HOME=$ANDROID_HOME \
+ANDROID_SDK_ROOT=$ANDROID_HOME \
 ./gradlew --no-daemon --max-workers=2 \
   '-Dorg.gradle.jvmargs=-Xmx1536m -XX:ActiveProcessorCount=2 -Dfile.encoding=UTF-8' \
   :app:assembleDebug :app:assembleDebugAndroidTest
@@ -62,13 +63,12 @@ Matching local signing certificate SHA256
 allowed **`adb install -r`**, without uninstall or data clearing. Installed
 control app/test hashes were independently checked.
 
-Each run used the sole target `localhost:5561`, isolated ADB5038:
+Each run used a single API34 emulator target on an isolated ADB server:
 
 ```sh
-export ADB_SERVER_SOCKET=tcp:localhost:5038
-ADB=/home/v/dbx-homes/dev/Android/Sdk/platform-tools/adb
+ADB=$ANDROID_HOME/platform-tools/adb
 # Execute once with false, once with true:
-"$ADB" -s localhost:5561 shell am instrument -w -r \
+"$ADB" -s <serial> shell am instrument -w -r \
   -e class 'io.github.sylirre.terminal.PackageManagerTest#alpineRepositoryAndInstall' \
   -e packageManagerDiagnostics true -e packageManagerJit false \
   io.github.sylirre.terminal.test/androidx.test.runner.AndroidJUnitRunner
@@ -96,10 +96,8 @@ AndroidJUnitRunner statuses, **not Gradle connected-test reports**.
 
 ## Evidence, scope and restoration
 
-Evidence directory:
-`/home/v/dbx-homes/dev/.cache/terminal-setup/alpine-same-rootfs-20261004/`.
-
-Primary files: `baseline.json`, `prepare.log`, `build.log`,
+Evidence was kept in a local directory outside the repo
+(`alpine-same-rootfs-20261004/`). Primary files: `baseline.json`, `prepare.log`, `build.log`,
 `control-artifacts.json`, `results.json`, both `*-instrumentation.log`,
 `*-logcat.log`, `*-junit.xml`, and `*-guest/` (full package log, phase files,
 script, root metadata, installed database and public key). Raw logcat records
@@ -139,7 +137,5 @@ hashes and git diff/status matched before adding this document.
 
 The exact 3.24.1 tarball/control APK remains in local cache only; it is absent
 from restored `UserlandRootfs/` and the final installed/output baseline APK.
-Both apps are stopped, no active instrumentation or Gradle daemon remains.
-Emulator **PID3488024** is preserved and responsive on **5561/ADB5038**; host
-ADB5037 was untouched. Device/Gradle exclusivity is released. No tools-branch
-work, source/version change, host/root install, push or commit occurred.
+Both apps were left stopped. No source/version change was made for this
+control.

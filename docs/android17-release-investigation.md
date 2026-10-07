@@ -40,10 +40,9 @@ ro.build.fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611
 ro.dalvik.vm.native.bridge=libndk_translation.so
 ```
 
-Emulator binary: 37.2.12.0, build 16428233. The owned console/ADB ports were
-5562/5563 and the isolated ADB server was `tcp:localhost:5038`. Registration
-required `adb connect 127.0.0.1:5563`; only that TCP serial was used afterward.
-The existing host server on 5037 was not stopped or reconfigured.
+Emulator binary: 37.2.12.0, build 16428233, on an isolated ADB server.
+Registration required `adb connect` to the emulator's TCP ADB port; only that
+TCP serial was used afterward.
 
 **No Alpine acceptance result was obtained on API37.** With
 `-gpu swangle -feature -Vulkan`, the OS repeatedly aborted SurfaceFlinger:
@@ -66,17 +65,13 @@ cause is unconfirmed. These are **test-platform failures, not reproduced
 Alpine DNS or package errors**. No app or guest DNS/TLS/signature workaround
 was applied.
 
-At handoff, no owned emulator was running and isolated ADB5038 listed no
-attached devices. Exclusive device access was released for other validation.
-The previous API34 AVD had already been stopped with permission. A new
-current-source build does not retroactively validate this release.
+A new current-source build does not retroactively validate this release.
 
-Evidence is retained under `$HOME/android17-investigation/` in the dev
-container: official APK/rootfs, release/tag/tree JSON, release Java/JNI
-sources, `api37-getprop.txt`, `emulator-api37-{retry,nodma,swiftshader}.log`,
-`api37-crash-log.txt`, `api37-nodma-crash-log.txt` and bounded system logs.
-Earlier blocked classifier calls were not executed; the retries described
-above did execute. No Gradle build was run by this investigation.
+Evidence was retained locally, outside the repo: official APK/rootfs,
+release/tag/tree JSON, release Java/JNI sources, `api37-getprop.txt`,
+`emulator-api37-{retry,nodma,swiftshader}.log`, `api37-crash-log.txt`,
+`api37-nodma-crash-log.txt` and bounded system logs. No Gradle build was run
+by this investigation.
 
 ## What x86 can and cannot cover
 
@@ -88,7 +83,7 @@ arm64-only native engine. `uname -m` inside the guest is virtualized and is
 not proof of host ARM coverage. A native bridge on the AVD is likewise not
 proof of actual ARM hardware execution.
 
-An ARM system image cannot use x86 KVM acceleration on this Intel host.
+An ARM system image cannot use x86 KVM acceleration on an x86 host.
 An ARM API37 image has not been booted or validated here; no such coverage is
 claimed. Practical faithful coverage requires the user's ARM phone, an
 ARM-hosted Android emulator, or an ARM physical-device test service. Before
@@ -177,6 +172,6 @@ coverage, but is not execution coverage.
 `sh -n scripts/diagnose-alpine-network.sh` passed. Command-mock tests verified
 independent nonzero DNS statuses, repository-update status capture, no-install
 mode, installation gating after a failed refresh, successful-install phase
-creation, and rejection of invalid arguments. The mock test is retained at
-`$HOME/android17-investigation/test-diagnostic-script.py`. These checks do
+creation, and rejection of invalid arguments. The mock test was kept locally
+and is not in the repo. These checks do
 not claim real Alpine/BusyBox, network, ARM or API37 execution.

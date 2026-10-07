@@ -10,7 +10,7 @@ Related provenance: [release-package-fix-provenance.md](release-package-fix-prov
 
 ## Exact artifacts and device
 
-- Original `$HOME/android17-investigation/A-SH_v0.8.0.apk`, SHA256
+- Original `A-SH_v0.8.0.apk`, SHA256
   `ef3b85214c67cfa7f18f67aa983637562d4d8cf1f99ccf129e0b81615d269030`.
   Rehashed locally and again from the installed `base.apk`.
 - Manifest: app ID `io.github.sylirre.terminal`, version 0.8.0 / 8000,
@@ -25,8 +25,8 @@ Related provenance: [release-package-fix-provenance.md](release-package-fix-prov
   Installed **through the original onboarding UI**, from clean app state;
   guest `/etc/alpine-release` reports 3.24.1. BusyBox v1.37.0;
   apk-tools 3.0.6-r0, compiled for AArch64.
-- Owned emulator PID **3488024**, ADB server **5038**, sole command target
-  **`localhost:5561`**. Android 14 / API34 / x86_64, fingerprint
+- A single disposable emulator on an isolated ADB server, sole command
+  target. Android 14 / API34 / x86_64, fingerprint
   `google/sdk_gphone64_x86_64/emu64xa:14/UE1A.230829.036.A4/12096271:user/release-keys`.
   Guest AArch64 and synthesized uname are not evidence of host ARM execution.
 
@@ -39,8 +39,10 @@ engine-only comparison:
 | Candidate test APK | `e0e0a73a45308c02e9e8195b8af1cb10f3b180fab2058a09a088ac211110f5e7` |
 | Candidate bundled Alpine **3.24.2** rootfs | `478378c84a543cad9094231d6e6c6ecf503cd08ad364eeadef91200b99d2fa3f` |
 
-Candidate engine `570ec1e0cd379592ca5d581a37f990618e9c85bf` / v1.5.0 already
-contains proc-fd fix `2c332ad47754f8d6cef74375a2f5b5ce5c3ad1b5`.
+The candidate was built with the arm64chroot engine then pinned at
+`570ec1e0cd379592ca5d581a37f990618e9c85bf` / v1.5.0 (since superseded by
+`313e1d9`, built on top of it), which already contains proc-fd fix
+`2c332ad47754f8d6cef74375a2f5b5ce5c3ad1b5`.
 Earlier strict candidate validation on this same emulator passed Alpine
 update/install/installed/binaries/key generation, all required phase codes 0.
 That result is preserved, not rerun or relabelled as original-release coverage.
@@ -128,13 +130,8 @@ claimed for the original APK because installation failed.
 
 ## Evidence and recovery
 
-Host evidence directory:
-
-```text
-/home/v/dbx-homes/dev/.cache/terminal-setup/original-api34-20261004/
-```
-
-Primary files:
+Evidence was kept in a local directory outside the repo
+(`original-api34-20261004/`). Primary files:
 
 - `RESULTS.json`, `original-embedded.json`, `original-manifest.txt`,
   `original-signature.txt`, `candidate-signature.txt`, `device-getprop.txt`.
@@ -171,29 +168,25 @@ contain private candidate data/keys: keep them local, do not publish them.
 
 Candidate apps are stopped, no instrumentation is active, shared
 `files/userland` is again absent, and retained candidate isolated package roots
-are restored. Emulator PID **3488024** remains alive, target
-**`localhost:5561` / ADB5038**; host ADB5037 was untouched. Exclusive device
-window is **released** for parent orchestration.
+are restored.
 
 For reproducing the original workflow, use an independently backed-up,
 explicitly disposable target; do not paste uninstall commands onto a phone:
 
 ```sh
-export ADB_SERVER_SOCKET=tcp:localhost:5038
-ADB=/home/v/dbx-homes/dev/Android/Sdk/platform-tools/adb
+ADB=$ANDROID_HOME/platform-tools/adb
 # After original APK install and Alpine onboarding:
-"$ADB" -s localhost:5561 shell \
+"$ADB" -s <serial> shell \
   "run-as io.github.sylirre.terminal sh -c 'cat > files/userland/tmp/diagnose-alpine-network.sh'" \
   < scripts/diagnose-alpine-network.sh
 # Within its Alpine PTY (run-as only transfers files):
 # sh /tmp/diagnose-alpine-network.sh --install
 # busybox timeout 180 apk -vv add openssh > /tmp/direct-add.log 2>&1
 # printf '%s\n' "$?" > /tmp/direct-add.rc
-"$ADB" -s localhost:5561 exec-out run-as io.github.sylirre.terminal \
+"$ADB" -s <serial> exec-out run-as io.github.sylirre.terminal \
   cat files/userland/tmp/alpine-network.NBDFiN/log.txt
 ```
 
-Previous strict candidate evidence:
-`/home/v/dbx-homes/dev/.cache/terminal-setup/main-procfd-package-final-20261004T110832Z/`;
-see its `HANDOFF.md` and `package-phase-results.json` for authoritative current
-results and limits.
+Previous strict candidate evidence was kept locally
+(`main-procfd-package-final-20261004T110832Z/`, with `HANDOFF.md` and
+`package-phase-results.json`); it is not in the repo.

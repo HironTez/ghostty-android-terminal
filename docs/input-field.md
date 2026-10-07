@@ -107,34 +107,17 @@ exercises real EditText InputConnections and shell-backed explicit transfers:
 - settings toggles, independent toolbar visibility and capitalization flags;
 - search/Back focus and draft retention.
 
-### Branch extraction and pending verification
+The Send case proves the negative rather than sampling it once: after Send the
+shell must echo the text, then neither the command's marker file nor its
+computed output (`$((6*7))`, so echoed input cannot match) may appear for a
+bounded polling window (`assertNeverWithin`). A positive control follows: a
+separate Enter must then run the very same line, so the absence was not a
+broken or slow command. Empty Run is checked the same way against re-running
+the previous command. The suite saves and restores the input-field, extra-keys,
+touch-keyboard and rich-keyboard settings around every test.
 
-This feature is isolated on `feature/terminal-input-field`, based on
-`1c2fad1d56969c4ee6fd8d92b369bd6c59ebcdb4`. Its production files and
-14-test input-field suite were copied byte-for-byte from the prior combined
-checkout. Unrelated terminal gesture-harness fixes stay on main; this branch
-has no dependency on other uncommitted features or package regression tests.
-Only this document was scoped to the extracted feature.
-
-Historical runtime evidence: the 14 input-field tests passed, zero skipped,
-in the combined checkout on API 34 x86_64, with SELinux Enforcing and
-animations disabled. Those results are not acceptance of this standalone
-branch. No Gradle build or device tests were run during extraction. Rebuild
-and rerun the input-field, shell-session and terminal-UI suites on this branch.
-The old combined APK hashes and unrelated suite reports are deliberately not
-reported as artifacts of the new branch.
-
-**Pending test review, not fixed by extraction:**
-`sendTransfersTextWithoutAddingEnterAndRunExecutesExplicitly` checks the
-absence of `field_send` immediately after Send, while shell output is
-asynchronous. That negative assertion can pass falsely before unintended
-execution is observed. Strengthen it with a deterministic observation/barrier
-in a later test change; do not treat the existing immediate check as proof
-that Send never appended Enter. Production transfer code was not changed as
-part of the branch split.
-
-API 34 x86_64 evidence does not establish Pixel/arm64, API 29/36, or
-16 KiB-device compatibility. Actual autocorrection/swipe behavior still needs
+The suite has been run on API 34 x86_64; that does not establish Pixel/arm64,
+API 29/36, or 16 KiB-device compatibility. Actual autocorrection/swipe behavior still needs
 a suitable IME/device.
 
 Run the suite with an Android device/emulator and the normal instrumented build:

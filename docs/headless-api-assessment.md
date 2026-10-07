@@ -1,7 +1,10 @@
 # Headless API over ADB: assessment
 
-Status: research only. Nothing here is implemented. Written 2026-10-06
-against `main` @ `1c2fad1`.
+> **Superseded.** This is the pre-implementation assessment, written
+> 2026-10-06 against `main` @ `1c2fad1`, and kept for its reasoning. The API
+> has since been implemented and differs in places (notably the peer policy,
+> §6); [headless-api.md](headless-api.md) is the authoritative description.
+> Line numbers and "today" statements below refer to that older tree.
 
 Goal: drive everything the app does (Android shell, userland distro, guest
 VM, distro install, backup/restore) from a host over ADB, on a phone whose
@@ -146,7 +149,7 @@ at a fixed size with no view.**
 | | Interactive TTY | exec + exit code | Auth | Verdict |
 | --- | --- | --- | --- | --- |
 | (a) `am broadcast` to a permission-guarded receiver | no | one-shot only; result via `setResultData`/extras, printed by `am` | `android:permission="android.permission.DUMP"` (shell holds it; normal apps can't, except via an adb `pm grant`) | control-plane shim only. `onReceive` runs on the main thread under the broadcast ANR timeout, can't stream, can't take stdin, and needs `--include-stopped-packages` |
-| (b) abstract `LocalServerSocket` + `adb forward tcp:N localabstract:NAME` | **yes**, raw byte stream | **yes**, streamed stdout/stderr, exit code, stdin | `SO_PEERCRED` via `LocalSocket.getPeerCredentials()`: allow uid 0, 2000 and the app's own uid | **recommended** |
+| (b) abstract `LocalServerSocket` + `adb forward tcp:N localabstract:NAME` | **yes**, raw byte stream | **yes**, streamed stdout/stderr, exit code, stdin | `SO_PEERCRED` via `LocalSocket.getPeerCredentials()`: allow uid 0, 2000 and the app's own uid (as implemented: the app's own *process* only, see §6) | **recommended** |
 | (c) ContentProvider + `content call/read/write` | no | partial: `content read --uri` can stream a pipe to stdout, but there is no exit code or stdin multiplexing | `readPermission/writePermission=DUMP` + `Binder.getCallingUid()` | usable for one-liners. Providers do start a stopped app's process. Clunky for anything else |
 | (d) `run-as` / `am instrument` | yes on debug builds | yes | debuggable only | dev fallback only. Release builds can't `run-as` |
 
@@ -191,6 +194,12 @@ Notes:
   3. On every accept, read `getPeerCredentials().getUid()`. Allow `0`,
      `2000` (`Process.SHELL_UID`) and `Process.myUid()` (for in-app tests).
      Close the connection otherwise.
+     *Correction (as implemented):* allowing the whole app uid is too broad,
+     because the userland's guest processes run under that uid too and could
+     drive the server. `HeadlessServer.isAllowedPeer` accepts uid 0, uid 2000,
+     or the app uid **only from the app's own process**
+     (`uid == Process.myUid() && pid == Process.myPid()`), using the peer pid
+     from the same credentials.
   4. The exported entry point (service and/or receiver) is protected with
      `android:permission="android.permission.DUMP"`.
   5. Optional defense in depth: a random token, regenerated on every service
@@ -285,6 +294,8 @@ gterm ──TCP 127.0.0.1:7777──adb──► adbd ──connect──► @io
   (`UserlandRootfs.java:426-428`) with an exact guest argv, so quoting
   survives. The exit code comes from `processWaitFor`; arm64chroot returns the
   guest's code (`pty_jni.c:168`).
+  (Implemented as `TerminalNative.pipeCreate` and
+  `UserlandOptions.withCommand(guest, cwd, env)`.)
 
 ### Protocol (v1)
 
@@ -365,7 +376,8 @@ server with peer-uid auth; `status`, `list`, `spawn` (shell/userland),
 `attach`, `resize`, `kill`, `exec` (pipes, exit code, stdin), `install`
 (bundled distro), `wakelock`; the output tap with reply suppression; the
 reaper; `scripts/gterm`; and an instrumented `HeadlessApiTest` that connects
-as the app's own uid.
+as the app's own uid (from within the app process, which the implemented peer
+check requires).
 
 **Later:** VM `vm-start`/`vm-stop` and attach to guest terminals; `backup`
 and `restore` streaming; `settings-get/set` (identity, JIT, storage binds,

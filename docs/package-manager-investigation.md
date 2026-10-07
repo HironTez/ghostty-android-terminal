@@ -6,16 +6,16 @@ Related: [test-suite overview](testing.md), [userland architecture](architecture
 
 Investigation performed 2026-10-02 UTC against the real Android API 34 x86_64
 emulator, running AArch64 guests inside the app's linked `arm64chroot` engine.
-The native pin is `570ec1e0cd379592ca5d581a37f990618e9c85bf`.
+The arm64chroot pin at the time was `570ec1e0cd379592ca5d581a37f990618e9c85bf`
+(since moved to `313e1d9`, built on top of it; not re-measured there).
 The x86_64 emulator cannot validate the arm64-only `chroot-ng` engine or the
 arm64-to-arm64 JIT. No native submodule modifications or patches were needed.
 
 The latest Android emulator initially crashed with a real host RenderThread
 SIGSEGV (confirmed from the host journal, not an OOM). Boot succeeded using
-`-gpu swangle -feature -Vulkan`. The test device is `emulator-5560` on the
-isolated adb server `tcp:localhost:5038`; the preexisting port-5037 server was
-not stopped or reconfigured. Do not also use the duplicate TCP endpoint
-`127.0.0.1:5561` for the same emulator.
+`-gpu swangle -feature -Vulkan`. All commands addressed that one emulator by an
+explicit serial on an isolated adb server; do not also address the same
+emulator through a duplicate TCP endpoint.
 
 App launch and APK installation succeeded; animations were disabled. Each
 online test extracts into its own unique
@@ -113,7 +113,7 @@ retried**. Do not treat that smoke test as package-install acceptance.
 
 ## Reproduction
 
-Build with JDK 17–21 and constrained workers on this host:
+Build with JDK 17–21 (constrained workers shown):
 
 ```bash
 ./gradlew --no-daemon --max-workers=2 \
@@ -124,12 +124,11 @@ Build with JDK 17–21 and constrained workers on this host:
 Use the isolated adb server and one explicit serial for every command:
 
 ```bash
-export ADB_SERVER_SOCKET=tcp:localhost:5038
-ADB="$HOME/Android/Sdk/platform-tools/adb"
-"$ADB" -s emulator-5560 install -r app/build/outputs/apk/debug/A-SH_v0.8.0.apk
-"$ADB" -s emulator-5560 install -r \
+ADB="$ANDROID_HOME/platform-tools/adb"
+"$ADB" -s <serial> install -r app/build/outputs/apk/debug/A-SH_v0.8.0.apk
+"$ADB" -s <serial> install -r \
   app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-"$ADB" -s emulator-5560 shell am instrument -w -r \
+"$ADB" -s <serial> shell am instrument -w -r \
   -e class io.github.sylirre.terminal.PackageManagerTest \
   -e packageManagerDiagnostics true \
   io.github.sylirre.terminal.test/androidx.test.runner.AndroidJUnitRunner
@@ -146,11 +145,11 @@ The ordinary run does **not** use these overrides.
 Inspect retained logs:
 
 ```bash
-"$ADB" -s emulator-5560 shell run-as io.github.sylirre.terminal \
+"$ADB" -s <serial> shell run-as io.github.sylirre.terminal \
   ls files/package-manager-tests
-"$ADB" -s emulator-5560 exec-out run-as io.github.sylirre.terminal \
+"$ADB" -s <serial> exec-out run-as io.github.sylirre.terminal \
   cat files/package-manager-tests/<run>/userland/tmp/package-manager.log
-"$ADB" -s emulator-5560 logcat -d -s PackageManagerTest:I
+"$ADB" -s <serial> logcat -d -s PackageManagerTest:I
 ```
 
 Stock JIT diagnostic roots from this investigation:
@@ -162,16 +161,3 @@ Interpreter roots:
 
 - `alpine-1790979684209-13919099221776`
 - `debian-1790978915023-13149913423609`
-
-Host copies are `/tmp/package-manager-{alpine,debian}-full.log` and
-`/tmp/package-manager-{alpine,debian}-interpreter-full.log`; runner outputs
-are `/tmp/package-manager-{alpine,debian}-stock.txt` and
-`/tmp/package-manager-interpreter-stock.txt`.
-
-## Build/validation status
-
-The first strengthened-test build compiled the latest app/UI sources but
-failed on unrelated concurrent native-tools tests using nonexistent Android
-`Os.unlink(String)` in `AndroidShellToolsTest`. The responsible agent was
-notified; package acceptance validation requires a successful test-APK rebuild
-and device run after that compile error is fixed.
