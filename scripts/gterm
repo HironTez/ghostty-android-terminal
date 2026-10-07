@@ -25,7 +25,7 @@ Interactive sessions put the local tty in raw mode and forward window size
 changes. Ctrl-] detaches (the session keeps running; `gterm attach ID`).
 exec exits with the remote command's exit status (128+N for signal N);
 Ctrl-C is forwarded, and a second Ctrl-C within a second makes gterm itself
-give up (exit 130), which hangs the remote command up.
+give up (exit 130); the server hangs the command up when it sees the close.
 
 Every connection first checks that the server is the app: it answers a
 random nonce with an HMAC under a per-start key that only the adb shell can
@@ -528,7 +528,7 @@ def cmd_exec(a):
                     now = time.monotonic()
                     if last_int is not None and now - last_int < 1.0:
                         conn.sock.close()
-                        die("interrupted; the remote command is hung up", 130)
+                        die("interrupted; the remote command is hung up once the server sees the close", 130)
                     last_int = now
                 deliver(signum)
         if sys.stdin in ready:

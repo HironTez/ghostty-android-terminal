@@ -137,7 +137,8 @@ or with `gterm kill`. `gterm exec` exits with the remote status (128+N when
 the command died of signal N). gterm's own failures (no server, a refused
 request, a failed identity check) exit 255, like ssh. Ctrl-C and other signals are forwarded to the
 remote process group; a second Ctrl-C within a second makes gterm give up
-locally (exit 130, like ssh), which hangs the remote command up. Without `--argv`, the words after `--` are joined and
+locally (exit 130, like ssh), and the server hangs the command up when it
+sees the connection close. Without `--argv`, the words after `--` are joined and
 run by the target's `sh -c` (ssh semantics). `exec` runs in the userland when
 a usable rootfs is installed, otherwise in `/system/bin/sh`. `--type` picks
 explicitly.
@@ -222,7 +223,11 @@ unknown session, a failed spawn) as the usual JSON error line.
   get through; beyond that the client is back-pressured, and a SIGNAL frame
   waits behind the stdin it sent first. gterm then delivers the signal through
   the `signal` op on a second connection instead. A client that disconnects
-  while back-pressured is still noticed and hangs the command up.
+  while back-pressured is noticed (socket hang-up) and hangs the command up,
+  but only when nothing holds the socket open for it: through `adb forward`,
+  adbd keeps the connection open until the stdin it already accepted (tens
+  of MiB) is delivered, so a command that never reads stdin keeps running.
+  Interrupt it first (Ctrl-C), or kill it with another `gterm exec`.
 - **Exec output.** After the command exits, its output is drained to the
   client however slowly the client reads; EXIT is the last frame. Only
   silence is bounded: once neither stdout nor stderr has produced anything
