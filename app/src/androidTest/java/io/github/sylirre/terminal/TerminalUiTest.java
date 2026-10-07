@@ -557,7 +557,7 @@ public class TerminalUiTest {
      * system_selection_toolbar_enabled), outside this process's window
      * hierarchy, so Espresso cannot reach it; and where SystemUI is absent
      * the service bind fails and nothing is rendered at all — for a stock
-     * EditText too (seen on a headless Pixel 8 Pro, API 37). In that case
+     * EditText too (seen on headless API 37 devices). In that case
      * the test proves the live ActionMode is a floating one offering this
      * item, and selects the item through that ActionMode's own menu — the
      * same dispatch a toolbar tap ends in (onActionItemClicked).

@@ -109,6 +109,9 @@ public class ProcFdPermissionsTest {
             // Successful runs do not accumulate entire distro installations.
             // lstat prevents following Alpine's absolute symlinks or escape.
             deleteOwnTree(files);
+            // rmdir: removes the shared parent only once no retained
+            // diagnostic root (from an earlier failed run) is left in it.
+            files.getParentFile().delete();
         } else {
             Log.e(TAG, "retained private diagnostic root: " + root + "\n" + diagnostic());
         }
