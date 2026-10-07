@@ -125,7 +125,8 @@ class Conn:
     def verify(self, key):
         """Nothing else is sent before the server proves it holds the key."""
         nonce = os.urandom(16).hex()
-        resp = self.request({"op": "hello", "nonce": nonce})
+        # Not request(): its error path would print whatever an impostor sent.
+        resp = self.request({"op": "hello", "nonce": nonce}, check=False)
         try:
             want = hmac.new(bytes.fromhex(key), ("gterm-hello-v1:" + nonce).encode(),
                             hashlib.sha256).hexdigest()
@@ -137,7 +138,7 @@ class Conn:
                 "headless server (another app squatting the name, or a stale GTERM_KEY); "
                 "refusing to send anything" % SOCKET_NAME)
 
-    def request(self, req):
+    def request(self, req, check=True):
         req = dict(req, v=1)
         self.sock.sendall((json.dumps(req) + "\n").encode())
         while b"\n" not in self.buf:
@@ -151,13 +152,45 @@ class Conn:
         except ValueError:
             die("bad response: %r" % line[:200])
         if not isinstance(resp, dict):
-            die("bad response: %r" % line[:200])
-        if not resp.get("ok"):
+            die("bad response" if not check else "bad response: %r" % line[:200])
+        if check and not resp.get("ok"):
             die(resp.get("error", "request failed"))
         return resp
 
+    # Streaming: frames are queued and written only when the socket is
+    # writable. A blocking sendall deadlocked against a command that reads
+    # stdin and writes stdout in volume: gterm stuck sending, the server stuck
+    # writing output gterm was not reading.
+    OUT_HIGH = 1 << 20  # stop reading local input while this much is queued
+
+    def stream(self):
+        self.sock.setblocking(False)
+        self.out = bytearray()
+
     def send(self, ftype, payload=b""):
-        self.sock.sendall(struct.pack(">BI", ftype, len(payload)) + payload)
+        self.out += struct.pack(">BI", ftype, len(payload)) + payload
+
+    def wants_write(self):
+        return bool(self.out)
+
+    def backlogged(self):
+        return len(self.out) >= self.OUT_HIGH
+
+    def flush_some(self):
+        try:
+            n = self.sock.send(self.out)
+        except BlockingIOError:
+            return
+        except OSError:
+            # Peer gone: drop the backlog; the read side reports the close.
+            self.out.clear()
+            return
+        del self.out[:n]
+
+    def flush_all(self):
+        while self.out:
+            select.select([], [self.sock], [])
+            self.flush_some()
 
     def frames(self):
         """Yields (type, payload) until the server closes the connection."""
@@ -175,7 +208,10 @@ class Conn:
 
     def read_available(self):
         """Non-blocking step for select loops: returns complete frames, or None at EOF."""
-        chunk = self.sock.recv(65536)
+        try:
+            chunk = self.sock.recv(65536)
+        except BlockingIOError:
+            return []
         if not chunk:
             return None
         self.buf += chunk
@@ -217,6 +253,7 @@ def interactive(req):
     conn = Conn()
     resp = conn.request(req)
     sid = resp.get("id")
+    conn.stream()
     if tty:
         sys.stderr.write("[gterm: session %s (%s); Ctrl-] detaches]\r\n" % (sid, resp.get("type")))
 
@@ -258,8 +295,10 @@ def interactive(req):
             pending = []
             if code is not None:
                 break
-            fds = [conn.sock, rfd] + ([sys.stdin] if stdin_open else [])
-            ready, _, _ = select.select(fds, [], [])
+            fds = [conn.sock, rfd] + ([sys.stdin] if stdin_open and not conn.backlogged() else [])
+            ready, writable, _ = select.select(fds, [conn.sock] if conn.wants_write() else [], [])
+            if writable:
+                conn.flush_some()
             if rfd in ready:
                 os.read(rfd, 64)
                 c, r = term_size()
@@ -273,6 +312,7 @@ def interactive(req):
                     before = data.split(DETACH_KEY, 1)[0]
                     if before:
                         conn.send(DATA, before)
+                    conn.flush_all()
                     detached = True
                     break
                 conn.send(DATA, data)
@@ -415,7 +455,21 @@ def cmd_exec(a):
         return interactive(req)
 
     conn = Conn()
-    conn.request(req)
+    pid = conn.request(req).get("pid")
+    conn.stream()
+
+    def deliver(signum):
+        # In band, a SIGNAL frame waits behind every queued DATA frame; with
+        # stdin backed up (a command not reading it) Ctrl-C would never land.
+        # Then it goes through a second connection, by pid.
+        if not conn.wants_write():
+            conn.send(SIGNAL, bytes([signum]))
+            return
+        side = Conn()
+        try:
+            side.request({"op": "signal", "pid": pid, "sig": signum}, check=False)
+        finally:
+            side.sock.close()
 
     # The handler only queues the signal; the loop sends it. Sending from the
     # handler could land a SIGNAL frame inside a half-sent DATA frame.
@@ -437,11 +491,13 @@ def cmd_exec(a):
     code = None
     out, err = sys.stdout.fileno(), sys.stderr.fileno()
     while code is None:
-        fds = [conn.sock, sig_r] + ([sys.stdin] if stdin_open else [])
-        ready, _, _ = select.select(fds, [], [])
+        fds = [conn.sock, sig_r] + ([sys.stdin] if stdin_open and not conn.backlogged() else [])
+        ready, writable, _ = select.select(fds, [conn.sock] if conn.wants_write() else [], [])
+        if writable:
+            conn.flush_some()
         if sig_r in ready:
             for signum in os.read(sig_r, 64):
-                conn.send(SIGNAL, bytes([signum]))
+                deliver(signum)
         if sys.stdin in ready:
             data = os.read(sys.stdin.fileno(), 65536)
             if data:

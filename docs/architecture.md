@@ -596,9 +596,9 @@ and UI resizes are deferred until detach, because the remote terminal owns
 the size. The in-app emulator keeps being fed either way, so the UI shows the
 same screen.
 `exec` uses `ProcessPipes` / `TerminalNative.pipeCreate` (the PTY spawn's
-fork path on three pipes, with an exact guest argv via
-`UserlandOptions.command`), so it has separate stdout/stderr and a real exit
-code. Children of both spawn flavors close every inherited descriptor above
+fork path on three pipes, with an exact guest argv built by
+`UserlandRootfs.command(context, UserlandSetup.options(...).withCommand(guest,
+cwd, env))`), so it has separate stdout/stderr and a real exit code. Children of both spawn flavors close every inherited descriptor above
 stderr first: the in-process engines never exec, so `O_CLOEXEC` alone would
 leave them holding other sessions' PTY masters and other execs' stdin pipes.
 

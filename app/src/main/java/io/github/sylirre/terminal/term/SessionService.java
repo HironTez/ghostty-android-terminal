@@ -63,6 +63,8 @@ public final class SessionService extends Service {
     private static final String PREFS = "headless";
     private static final String KEY_HEADLESS = "enabled";
     private static final String KEY_AUTOSTART = "autostart";
+    /** The wake-lock choice a sticky restart and the boot autostart reapply. */
+    private static final String KEY_WAKELOCK = "wakelock";
 
     private static volatile boolean wakeLockHeld;
     /** The running instance (main thread writes), for in-process updates. */
@@ -169,6 +171,7 @@ public final class SessionService extends Service {
      * be allowed a background foreground-service start (device-idle allowlist).
      */
     public static void setWakeLock(Context context, boolean on) {
+        setHeadlessWakeLock(context, on);
         SessionService s = running;
         if (s != null) {
             wakeLockHeld = on; // the state the caller can read back at once
@@ -198,6 +201,18 @@ public final class SessionService extends Service {
      */
     public static boolean headlessEnabled(Context context) {
         return prefs(context).getBoolean(KEY_HEADLESS, false);
+    }
+
+    /**
+     * Whether headless mode holds the wake lock when it comes back by itself
+     * (sticky restart, boot): the last explicit choice, default on.
+     */
+    public static boolean headlessWakeLock(Context context) {
+        return prefs(context).getBoolean(KEY_WAKELOCK, true);
+    }
+
+    private static void setHeadlessWakeLock(Context context, boolean on) {
+        prefs(context).edit().putBoolean(KEY_WAKELOCK, on).apply();
     }
 
     /** Opt-in: start headless mode on BOOT_COMPLETED (off by default). */
@@ -252,9 +267,12 @@ public final class SessionService extends Service {
         }
         if (ACTION_TOGGLE_WAKELOCK.equals(action)) {
             toggleWakeLock();
+            setHeadlessWakeLock(this, wakeLockHeld);
         }
         if (ACTION_SET_WAKELOCK.equals(action)) {
-            if (intent.getBooleanExtra("on", true)) acquireWakeLock();
+            boolean on = intent.getBooleanExtra("on", true);
+            setHeadlessWakeLock(this, on);
+            if (on) acquireWakeLock();
             else releaseWakeLock();
         }
         startForeground();
@@ -262,9 +280,12 @@ public final class SessionService extends Service {
             try {
                 HeadlessServer.start(getApplicationContext());
                 prefs(this).edit().putBoolean(KEY_HEADLESS, true).apply();
-                if (intent == null || intent.getBooleanExtra(EXTRA_WAKELOCK, true)) {
-                    acquireWakeLock();
-                }
+                // A sticky restart has no extras: reapply the last choice, so
+                // `gterm start --no-wakelock` survives the process being killed.
+                boolean wake = intent == null ? headlessWakeLock(this)
+                        : intent.getBooleanExtra(EXTRA_WAKELOCK, true);
+                if (intent != null) setHeadlessWakeLock(this, wake);
+                if (wake) acquireWakeLock();
                 startForeground(); // reflect the wake lock in the notification
             } catch (java.io.IOException e) {
                 Log.e(TAG, "headless server failed to start", e);

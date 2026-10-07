@@ -11,8 +11,10 @@ The v0.8.0 engine gitlink `b51064beb7e7dcbb60ff0a90cbb1b91abed48741` (v1.3.0)
 followed the final `/proc/<pid>/fd/N` link to an absolute host path and prefixed
 the guest rootfs again. Consequently systemd's legacy `fchmodat` fallback
 returned ENOENT for a valid ordinary fd; systemd's mounted-proc error translation
-reported EBADF. Current engine `570ec1e0cd379592ca5d581a37f990618e9c85bf` (v1.5.0)
-already contains upstream fix `2c332ad47754f8d6cef74375a2f5b5ce5c3ad1b5`.
+reported EBADF. The engine this probe was written against,
+`570ec1e0cd379592ca5d581a37f990618e9c85bf` (v1.5.0), already contains upstream
+fix `2c332ad47754f8d6cef74375a2f5b5ce5c3ad1b5`, as does the current pin
+`313e1d9` built on top of it.
 No further engine patch, syscall-452 implementation or fake-EBADF success is
 needed. See [release provenance](../../docs/release-package-fix-provenance.md).
 
@@ -40,10 +42,10 @@ exit code. No assertion relies on shell stdout, echoed input or PTY markers.
 
 ## Rebuild (one compiler/linker worker, no Gradle/device)
 
-From the repository root, using the already installed Android NDK:
+From the repository root, using the pinned Android NDK:
 
 ```sh
-ANDROID_NDK="$HOME/Android/Sdk/ndk/28.2.13676358" \
+ANDROID_NDK="$ANDROID_HOME/ndk/28.2.13676358" \
   scripts/build-proc-fd-permissions-probe.sh
 ```
 
@@ -61,10 +63,11 @@ it inside its private guest root and sets the **guest** executable mode. The
 emulator loads it in-process, exactly like other guest ELF programs; Android's
 app-data W^X policy is neither bypassed nor weakened.
 
-## Device run — only after the parent allocates it
+## Device run
 
 Bundle either the existing Debian or Alpine rootfs asset with the APK. The test
-prefers Debian, otherwise Alpine; it skips when neither is bundled. It installs
+prefers Debian, otherwise Alpine; it skips when neither is bundled. It runs by
+default with the rest of the suite (in CI it boots the bundled Alpine asset). It installs
 a fresh root under `files/proc-fd-permissions-tests/<distro>-<UUID>/userland`
 using the same wrapped-Context pattern as `PackageManagerTest`. It never reads
 or writes `AppSettings`, uses `SessionManager`, touches `files/userland`, binds
@@ -72,7 +75,7 @@ external storage, downloads packages or rewrites maintainer scripts. Successful
 roots are removed without following symlinks; failed roots/reports are retained
 at their logged paths for diagnosis.
 
-Once Gradle/device ownership is granted, use the supported JDK (17–21):
+To run it alone, use the supported JDK (17–21):
 
 ```sh
 ./gradlew --max-workers=1 connectedDebugAndroidTest \
@@ -93,4 +96,4 @@ is not evidence about the emulated engine's resolver.
 x86_64 Android emulation can prove the guest/common resolver fix but cannot prove
 ARM-to-ARM JIT or physical-device policy behavior. Physical ARM64 Android 17
 interpreter/JIT validation and actual Debian `systemd-sysusers`/apt reproduction
-remain pending until separately allocated and run.
+remain separate, still-pending checks.

@@ -572,11 +572,12 @@ public final class OnboardingActivity extends Activity {
 
         new Thread(() -> {
             IOException failure = null;
+            boolean installedNow = false;
             try {
                 // Extracts and persists the outcome (distro, onboarding done,
                 // derived login shell/home) on this thread, the moment it
                 // succeeds — shared with the headless API's install.
-                UserlandSetup.install(getApplicationContext(), d,
+                installedNow = UserlandSetup.install(getApplicationContext(), d,
                         (extracted, compressedRead, compressedTotal) -> runOnUiThread(
                                 () -> onInstallProgress(extracted, compressedRead,
                                         compressedTotal)));
@@ -584,7 +585,8 @@ public final class OnboardingActivity extends Activity {
                 failure = e;
             }
             final IOException error = failure;
-            runOnUiThread(() -> onInstallFinished(d, error));
+            final boolean fresh = installedNow;
+            runOnUiThread(() -> onInstallFinished(d, fresh, error));
         }, "userland-install").start();
     }
 
@@ -602,7 +604,7 @@ public final class OnboardingActivity extends Activity {
         }
     }
 
-    private void onInstallFinished(UserlandDistro d, IOException error) {
+    private void onInstallFinished(UserlandDistro d, boolean fresh, IOException error) {
         if (isFinishing() || isDestroyed()) return;
         installing = false;
         if (error == null) {
@@ -612,7 +614,13 @@ public final class OnboardingActivity extends Activity {
             installBar.setIndeterminate(false);
             installBar.setProgress(100);
             installTitle.setText(R.string.onb_done_title);
-            installDetail.setText(getString(R.string.onb_done_detail, distroTitle(d)));
+            // Not fresh: a rootfs was already there (the headless API can
+            // install concurrently), and UserlandSetup kept its settings, so
+            // name what is actually installed rather than what was picked.
+            UserlandDistro ready = fresh ? d : UserlandDistro.bundledByAsset(this,
+                    new AppSettings(this).userlandDistroAsset());
+            installDetail.setText(getString(R.string.onb_done_detail,
+                    distroTitle(ready != null ? ready : d)));
             installBadge.animate().scaleX(1.08f).scaleY(1.08f).setDuration(140)
                     .withEndAction(() -> installBadge.animate()
                             .scaleX(1f).scaleY(1f).setDuration(140));
