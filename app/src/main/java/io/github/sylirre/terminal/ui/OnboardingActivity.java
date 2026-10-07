@@ -618,7 +618,7 @@ public final class OnboardingActivity extends Activity {
             // install concurrently), and UserlandSetup kept its settings, so
             // name what is actually installed rather than what was picked.
             UserlandDistro ready = fresh ? d : UserlandDistro.bundledByAsset(this,
-                    new AppSettings(this).userlandDistroAsset());
+                    settings.userlandDistroAsset());
             installDetail.setText(getString(R.string.onb_done_detail,
                     distroTitle(ready != null ? ready : d)));
             installBadge.animate().scaleX(1.08f).scaleY(1.08f).setDuration(140)
