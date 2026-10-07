@@ -111,6 +111,12 @@ made of regular files, directories and links only.
   shell otherwise); **long-press `+`** opens the other kind — or the
   distribution setup when none is installed yet. Tap a tab to
   switch; `×` closes the current one. Closing the last tab exits the app.
+- **Android shell tools**: the plain Android shell (and headless `exec`)
+  has BusyBox 1.37.0 applets plus OpenSSH 10.5p1 `ssh`, `scp`, `sftp` and
+  `ssh-keygen` on `PATH` without any rootfs; keys and config live in
+  `$HOME/.ssh` (the app's files dir). No `sshd`. Licenses and BusyBox's
+  corresponding source ship in the APK. See
+  [docs/android-shell-tools.md](docs/android-shell-tools.md).
 - **Userland**: you are (fake) root; `apk add …` (Alpine) or
   `apt update && apt install …` (Debian) works. Networking uses the app's
   permissions; everything actually runs as the app's unprivileged uid.
