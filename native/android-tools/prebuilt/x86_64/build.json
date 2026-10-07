@@ -4,11 +4,11 @@
   "api": 29,
   "abi": "x86_64",
   "outputs": {
-    "libbusybox.so": "c432e07b9e05d6bf12f2c1ee20fbc31ab62f754b8c31e43fe39a48c1c9db8ecd",
-    "libssh.so": "a8f3d1ddd8fe1e1c51c8105a41b31a7ff8622e63041fdabaa3e9ffe8fc423000",
+    "libbusybox.so": "9a69307c1e56f50c24c319e2683b99f054b1800b0958b2a4a4d71742dc332808",
+    "libssh.so": "0186dd2ea50e4f0e54eb598e91ea86b291b395e50641525969da1fbb0a8a888c",
     "libscp.so": "6685bc7f5da37daaea252a4a53ebbae3a4d72e80cb793bd6cc4165cf561d1da0",
     "libsftp.so": "4253eca2982ba58aceb083ebd7bd9f473d17e7158ce9438ceaeac228479d5395",
-    "libssh-keygen.so": "e8ca4d99dd08251ae4f72d98c67f1b6f78cf226fc618a6eaaf22460186956c54"
+    "libssh-keygen.so": "f559c269338dbc009c8c68af8a24d8bfcbb7faf1ae4dc3bae0f85ed26ae9a7dd"
   },
   "sources": {
     "busybox": {
@@ -27,10 +27,10 @@
   "inputs": {
     "native/android-tools/sources.lock": "2293c9de2d3b75eed2f839addc74c86c0d2afc20070705052100cf6770c44b5d",
     "native/android-tools/busybox.config": "1e15ec9fb6a9d06623ac2bc707d5facc727894529bdd2c58fec4a001b09614a0",
-    "scripts/build-android-tools.sh": "b1f7ca2b10856bd1c3e5cdc4613c4669c599817166d97f78174b7827f492ec39",
+    "scripts/build-android-tools.sh": "acee432d19fe7db9832fe2f24c1aa00012a194ccf4f1e5acfe8813bb66be090b",
     "scripts/fetch-android-tools.sh": "822c183565dc8c5dce6642b6c5c2c2add20a24831cf7ade620c3f0c0b2c398cc",
     "scripts/verify-android-tools.py": "1a36d166a31e7cac562ae2a76003fbd6bcd1e22e3a97ab4214c78667c1af01fc",
-    "scripts/bundle-busybox-source.py": "a739bcc8e8eb91ebd9ce6b2c8df8e629ee8bf90d3ff82b5a5ea54ba8d361ea5f",
+    "scripts/bundle-busybox-source.py": "612ef9426f6a913f745a2f46df55c083dfeadf187d7988c29b5b58df2b27e707",
     "scripts/android-tools-notices.py": "48041ee283145a23d152a4564f55777804be9202e6a86d7824b56eed7a2e26a6",
     "native/android-tools/patches/busybox/0001-apk-name.patch": "2edcc5cdca59abc344a1df4026b899cb752dc75554440fc55017544baef3f43b",
     "native/android-tools/patches/openssh/0001-android-home-and-bzero.patch": "641f6939adf46fdaac1eafacb5cda58abef03109c6dbc315a9612415c9b4856c",

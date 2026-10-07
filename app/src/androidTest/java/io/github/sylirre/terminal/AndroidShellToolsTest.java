@@ -43,6 +43,8 @@ public class AndroidShellToolsTest {
         context = ApplicationProvider.getApplicationContext();
         scratch = Files.createTempDirectory(context.getCacheDir().toPath(), "tools-test-").toFile();
         session = new TerminalSession(160, 48, 8, 16, 10_000, context, LISTENER);
+        // mksh drops typeahead when its line editor starts: wait for the prompt.
+        waitFor("shell prompt", 30_000, () -> screen().contains("$"), this::screen);
         run("export HOME=" + quote(scratch.getAbsolutePath()) + "; mkdir -p \"$HOME/.ssh\"; chmod 700 \"$HOME/.ssh\"", 0);
     }
 

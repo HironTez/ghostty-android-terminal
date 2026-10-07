@@ -73,7 +73,11 @@ public final class AndroidShellTools {
         return bin;
     }
 
-    /** Only managed symlinks can be replaced; never clobber a user's regular file. */
+    /**
+     * Only managed symlinks — ones pointing at a bundled executable, from this
+     * or an earlier install's nativeLibraryDir — are replaced. A user's own
+     * file, or a symlink they pointed elsewhere, is left alone.
+     */
     private static void alias(File bin, String name, File target) throws ErrnoException {
         File link = new File(bin, name);
         try {
@@ -81,7 +85,12 @@ public final class AndroidShellTools {
                 Log.w(TAG, "Not replacing non-symlink " + link + "; alias skipped");
                 return;
             }
-            if (Os.readlink(link.getPath()).equals(target.getAbsolutePath())) return;
+            String current = Os.readlink(link.getPath());
+            if (current.equals(target.getAbsolutePath())) return;
+            if (!bundledTargets().contains(new File(current).getName())) {
+                Log.w(TAG, "Not replacing user symlink " + link + " -> " + current);
+                return;
+            }
         } catch (ErrnoException e) {
             if (e.errno != OsConstants.ENOENT) throw e;
         }
@@ -96,6 +105,14 @@ public final class AndroidShellTools {
         }
     }
 
+    /** File names of the bundled executables a managed alias points at. */
+    private static Set<String> bundledTargets() {
+        Set<String> targets = new HashSet<>();
+        for (String client : CLIENTS) targets.add("lib" + client + ".so");
+        targets.add("libbusybox.so"); // every applet alias
+        return targets;
+    }
+
     /**
      * Removes managed symlinks an update no longer provides (an applet dropped
      * from the curated list) and pending links left by a crash mid-refresh.
@@ -104,8 +121,7 @@ public final class AndroidShellTools {
     private static void pruneStale(File bin) {
         Set<String> managed = new HashSet<>(Arrays.asList(CLIENTS));
         managed.addAll(Arrays.asList(APPLETS));
-        Set<String> targets = new HashSet<>();
-        for (String client : CLIENTS) targets.add("lib" + client + ".so");
+        Set<String> targets = bundledTargets();
         String[] names = bin.list();
         if (names == null) return;
         for (String name : names) {
