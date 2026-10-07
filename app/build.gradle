@@ -99,6 +99,10 @@ def verifyAndroidShellTools = tasks.register("verifyAndroidShellTools") {
                 .digest(file.bytes).encodeHex().toString() }
         def fail = { msg -> throw new GradleException(msg) }
         def lock = json(new File(toolsDir, "sources.lock"))
+        def patchFiles = []
+        new File(toolsDir, "patches").eachFileRecurse(groovy.io.FileType.FILES) { f ->
+            patchFiles << repoRoot.toPath().relativize(f.toPath()).toString().replace('\\', '/')
+        }
         ["arm64-v8a", "x86_64"].each { abi ->
             def dir = new File(toolsDir, "prebuilt/${abi}")
             def manifestFile = new File(dir, "build.json")
@@ -137,6 +141,13 @@ def verifyAndroidShellTools = tasks.register("verifyAndroidShellTools") {
                             + "run scripts/build-android-tools.sh")
                 }
             }
+            // A patch added since the build is an input the manifest never saw.
+            patchFiles.each { rel ->
+                if (!manifest.inputs.containsKey(rel)) {
+                    fail("Android tool build input not recorded for ${abi}: ${rel}; "
+                            + "run scripts/build-android-tools.sh")
+                }
+            }
         }
         def sourceArchive = new File(toolsDir, "licenses/busybox-corresponding-source.tar.xz")
         def sourceManifest = new File(toolsDir, "licenses/busybox-source.json")
@@ -151,6 +162,9 @@ def verifyAndroidShellTools = tasks.register("verifyAndroidShellTools") {
         ["scripts/android-tools-notices.py", "scripts/build-android-tools.sh",
          "native/android-tools/patches/busybox/0001-apk-name.patch"].each { required ->
             if (!source.inputs.containsKey(required)) fail("BusyBox corresponding source lacks ${required}")
+        }
+        patchFiles.each { rel ->
+            if (!source.inputs.containsKey(rel)) fail("BusyBox corresponding source lacks ${rel}; run scripts/bundle-busybox-source.py")
         }
         source.inputs.each { path, expected ->
             def input = new File(repoRoot, path)
