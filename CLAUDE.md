@@ -83,6 +83,7 @@ Java  app/src/main/java/io/github/sylirre/terminal/
          ScreenSnapshot (flat viewport arrays for rendering)
   ui/    TerminalView (Canvas grid renderer + TYPE_NULL InputConnection)
          ExtraKeysView, TabStripView, MainActivity
+         TerminalInputFieldView (the Aa local draft field; docs/input-field.md)
          OnboardingActivity (first-run intro + distro chooser + install)
          UserlandSetup (install + persisted outcome, settings → UserlandOptions)
   headless/ HeadlessServer/HeadlessConnection/Frames: ADB control API on an
@@ -165,9 +166,6 @@ thread → `TerminalView` pulls a fresh `ScreenSnapshot` in `onDraw`.
   no `PROOT_*` environment; the old proot loader is gone.
   (`useLegacyPackaging` is back, but only so the installer extracts the
   bundled Android shell tools — plain-shell executables, never the userland.)
-  `--jit` is W^X-aware: its code cache tries RWX anon, falls back to a
-  `memfd` dual-map under SELinux `execmem`, then to the interpreter — safe to
-  leave on.
 - **arm64chroot's `--jit` is W^X-aware.** Its code cache tries RWX anon,
   falls back to a `memfd` dual-map under SELinux `execmem`, then to the
   interpreter — so `--jit` is safe to leave on across devices.

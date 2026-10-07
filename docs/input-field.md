@@ -116,9 +116,9 @@ broken or slow command. Empty Run is checked the same way against re-running
 the previous command. The suite saves and restores the input-field, extra-keys,
 touch-keyboard and rich-keyboard settings around every test.
 
-The suite has been run on API 34 x86_64; that does not establish Pixel/arm64,
-API 29/36, or 16 KiB-device compatibility. Actual autocorrection/swipe behavior still needs
-a suitable IME/device.
+The suite drives the field through Espresso, not a real IME: actual
+autocorrection and swipe-typing behavior still needs checking by hand with a
+suitable keyboard.
 
 Run the suite with an Android device/emulator and the normal instrumented build:
 

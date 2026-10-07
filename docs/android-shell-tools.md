@@ -76,7 +76,7 @@ ANDROID_NDK="$HOME/Android/Sdk/ndk/28.2.13676358" JOBS=2 \
 
 `HOSTCC`, `MAKE`, `ANDROID_NDK`/`ANDROID_NDK_HOME` may be overridden. `ABIS`
 may select one ABI for development; the default builds both required ABIs.
-`JOBS` is limited to 1 or 2 for low-memory machines. Build logs can be
+`JOBS` (default 2) sets make's parallelism. Build logs can be
 redirected to a user-local file. The script verifies the pinned NDK revision,
 uses API-29 Clang, builds from clean source trees, disables optional OpenSSH
 server/helper dependencies, and copies only the selected standalone tools.
@@ -139,14 +139,14 @@ the corresponding-source archive/manifest — so a stale tree cannot be
 packaged.
 
 Builds use a fixed `SOURCE_DATE_EPOCH`, `LC_ALL=C`/`TZ=UTC` and
-prefix-mapped compiler paths. Evidence from 2026-10-07: three clean full
-builds of both ABIs produced bit-identical `ssh`, `scp`, `sftp` and
-`ssh-keygen` once their inputs were fixed (`scp`/`sftp` also matched the
-prebuilts committed before this work); the final `libbusybox.so` came out
-identical from a BusyBox-only build, the full build, and a rebuild inside
-the extracted corresponding-source archive in another directory, for both
-ABIs. This is same-host evidence (one NDK install, one host toolchain), not
-an independent second-machine rebuild.
+prefix-mapped compiler paths, so no checkout path reaches a binary. OpenSSL is
+configured without the prefix maps: it records its compiler flags in the
+library (`OpenSSL_version(OPENSSL_CFLAGS)`), and it compiles from relative
+paths anyway. Repeated clean builds of both ABIs have produced bit-identical
+tools, and `libbusybox.so` comes out identical from a BusyBox-only build, the
+full build, and a rebuild inside the extracted corresponding-source archive in
+another directory. That is same-host evidence (one NDK install, one host
+toolchain), not an independent second-machine rebuild.
 
 Scratch builds are in `native/android-tools/.build/`, downloads in
 `native/android-tools/sources/`; both are git-ignored except the BusyBox
@@ -220,87 +220,36 @@ SCP/SFTP's SSH helper and proxy-shell launch, alias refresh/pruning and
 non-fatal conflicts, and the app-data copied-code exec denial (126).
 `ShellSessionTest` asserts the bundled PATH.
 
-### Results after the review round (2026-10-07; Pixel 8 Pro, Android 17, arm64-v8a)
+### On-device checks beyond the suite
 
-BusyBox rebuilt with upstream's own flags kept (`-Oz`, `-funsigned-char`,
-`-ffunction-sections`, ... — they used to be dropped by command-line
-`CFLAGS`), plus the review fixes elsewhere in the app. `ssh`/`ssh-keygen` were
-rebuilt too; their bytes changed only by the checkout path OpenSSH embeds in
-its CFLAGS string. Animation scales at 0 for the UI suites, restored after.
-
-| Suite | Result |
-| --- | --- |
-| `AndroidShellToolsTest` | 7/7 passed (every-applet loop, `command -v` resolution) |
-| `ShellSessionTest` | 9/9 passed |
-| `EmulatorVtTest` | 54/54 passed |
-| `HeadlessApiTest` | 18/18 passed (final build, with the `signal` op tests) |
-| `UserlandAlpineSessionTest` | 4/4 passed (incl. `guestPathHasNoAndroidTools`) |
-| `ProcFdPermissionsTest` | 3/3 passed |
-| `TerminalUiTest` | 18/18 passed |
-| `TerminalInputFieldUiTest` | 14/14 passed |
-| `OnboardingActivityTest` | 2/2 (skips itself: a rootfs is installed) |
-
-`gterm` against the device: `awk`, `diff`, `sed`, `tar` from the rebuilt
-BusyBox; a 32 MiB `cat` round trip byte-identical in 2 s; Ctrl-C reaching a
-command that ignores a flooded stdin; a bad `--cwd` refused. The OpenSSH
-server checks below were not repeated for this build.
-
-### Earlier results (2026-10-07, before d5e482e; Pixel 8 Pro, Android 17, arm64-v8a)
-
-Final debug APKs installed with `install -r` over the existing app (same
-debug certificate, data preserved). Instrumentation ran detached on the
-device; UI suites with the three animation scales at 0 and restored
-afterwards (1.0 / 1.0 / unset).
-
-| Suite | Result |
-| --- | --- |
-| `AndroidShellToolsTest` | 7/7 passed |
-| `ShellSessionTest` | 9/9 passed |
-| `EmulatorVtTest` | 54/54 passed |
-| `HeadlessApiTest` | 15/15 passed |
-| `TerminalUiTest` | 18/18 passed |
-| `TerminalInputFieldUiTest` | 14/14 passed |
-
-No test was skipped. App APK SHA-256 `bd0efef9c402c66978fe05219e7e8fff8c374b7413d74b01f06f6abad8b01d3a`
-(16,789,298 bytes); test APK `f0f64f8c0b3cc39a1f1178f6d70be633fcbbcc9ad9b2e84a25d54dfd35571ee3`.
-
-The first real-ARM run found that BusyBox `awk` and `diff` crashed (SIGSEGV)
-on every invocation: clang treats BusyBox's `const` `ptr_to_globals` as
-immutable and hoisted the first `G.x` access above `SET_PTR_TO_GLOBALS`, so
-the store went through NULL. The x86_64 emulator runs had not exposed it.
-The build now passes `-DBB_GLOBAL_CONST=` (the knob `libbb.h` documents for
-this), and the every-applet test guards the class of bug.
-
-Scripted on-device checks against a throwaway OpenSSH 10.5p1 `sshd`
-(host-built under `$DEV`, unprivileged, port 2222, own host key and
-`authorized_keys`, `internal-sftp`), reached from the phone via
-`adb reverse tcp:2222 tcp:2222`, with the client in a scratch HOME under the
-app's cache dir and the server's host key pinned in `known_hosts`
+The suite has been run on arm64-v8a hardware as well as the x86_64 emulator;
+the arm64 runs are what exposed the BusyBox `awk`/`diff` SIGSEGV described
+under Rebuilding (the emulator had not). The OpenSSH clients have also been
+checked against a throwaway, unprivileged OpenSSH 10.5p1 `sshd` on a host
+(own host key and `authorized_keys`, `internal-sftp`), reached from the device
+via `adb reverse tcp:2222 tcp:2222`, with the client in a scratch HOME under
+the app's cache dir and the server's host key pinned in `known_hosts`
 (`StrictHostKeyChecking=yes`, `BatchMode=yes`):
 
-- `ssh-keygen -t ed25519` on the phone; public-key login; remote command
-  output (`uname -s`, `id -un`) returned; `ssh -tt` got a remote PTY
-  (`/dev/pts/N`, `stty size` 24 80);
+- `ssh-keygen -t ed25519` on the device; public-key login; remote command
+  output returned; `ssh -tt` got a remote PTY;
 - 1 MiB random files: `scp` upload (SFTP protocol), `scp -O` upload (legacy
-  protocol), `scp` download, `sftp -b` put and get — all SHA-256 checksums
-  matched on both ends;
+  protocol), `scp` download, `sftp -b` put and get, all SHA-256 checksums
+  matching on both ends;
 - a wrong pinned host key was refused ("REMOTE HOST IDENTIFICATION HAS
-  CHANGED").
-- `scripts/gterm exec --type shell -- busybox uname -m` → `aarch64`; the
-  headless Android shell resolves `awk`, `ssh`, `scp`, `sftp`, `ssh-keygen`
-  from `files/android-bin`. (Without `--type shell`, `exec` targets the
-  installed userland, which has its own BusyBox.)
-- The license/source-extraction snippet below was run from the app's shell.
+  CHANGED");
+- through the headless API, `gterm exec --type shell` resolves `awk`, `ssh`,
+  `scp`, `sftp` and `ssh-keygen` from `files/android-bin`.
 
 Static checks: every ELF in the APK (`libterm.so`, `libarm64emu.so` and the
 five tools, both ABIs) has 16 KiB `PT_LOAD` alignment and congruent offsets
 (llvm-readelf from NDK r28c); the tools also pass the verifier above.
 
-Not yet covered: a 16 KiB-page device or emulator at runtime (this Pixel
-runs 4 KiB pages; static alignment is not a runtime test), API 29 hardware,
-password/keyboard-interactive auth, DNS/SSHFP and ProxyJump against a real
-fixture, and an interactive session typed through the UI rather than the
-PTY test harness / headless API.
+Not yet covered: a 16 KiB-page device or emulator at runtime (static
+alignment is not a runtime test), API 29 hardware, password/
+keyboard-interactive auth, DNS/SSHFP and ProxyJump against a real fixture,
+and an interactive session typed through the UI rather than the PTY test
+harness or headless API.
 
 ## Licensing and corresponding source
 
@@ -331,7 +280,7 @@ GPLv2 obligations for the shipped BusyBox, and how they are met:
 script runs it automatically; `--check` rebuilds it in memory and fails on
 any difference. Rebuilding BusyBox from the extracted archive with
 `COMPONENTS=busybox` reproduced the shipped binaries bit-for-bit for both
-ABIs (2026-10-07). Refresh and redistribute the archive alongside any changed
+ABIs. Refresh and redistribute the archive alongside any changed
 prebuilts/config/patches/scripts (Gradle refuses a stale one). It may also
 be published as a release sidecar. OpenSSH/OpenSSL full upstream sources
 remain available via the pinned, verified fetcher.

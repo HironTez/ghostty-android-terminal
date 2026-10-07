@@ -31,7 +31,7 @@ Some features will NOT be implemented:
 - Google Play, F-Droid or other stores distribution
 - Right-to-left input (VT engine issue)
 - Ambiguous-width characters as double width (VT engine issue)
-- Native, [Termux](httos://github.com/termux/termux-app)-like
+- Native, [Termux](https://github.com/termux/termux-app)-like
   Android-compatible userland
 - Android API bridge like [Termux:API](https://github.com/termux/termux-api)
 - On-boot automation like [Termux:Boot](https://github.com/termux/termux-boot)
@@ -111,6 +111,10 @@ made of regular files, directories and links only.
   shell otherwise); **long-press `+`** opens the other kind — or the
   distribution setup when none is installed yet. Tap a tab to
   switch; `×` closes the current one. Closing the last tab exits the app.
+- **Input field**: the **Aa** button in the top bar opens a local draft
+  field above the toolbar for autocorrect, swipe typing and editing before
+  anything reaches the terminal; **Send** pastes it, **Run** pastes it and
+  presses Enter. See [docs/input-field.md](docs/input-field.md).
 - **Android shell tools**: the plain Android shell (and headless `exec`)
   has BusyBox 1.37.0 applets plus OpenSSH 10.5p1 `ssh`, `scp`, `sftp` and
   `ssh-keygen` on `PATH` without any rootfs; keys and config live in
@@ -153,6 +157,9 @@ See [docs/testing.md](docs/testing.md).
 - [docs/testing.md](docs/testing.md) — test suites and how to run them
 - [docs/headless-api.md](docs/headless-api.md) — headless ADB control API,
   device setup, `scripts/gterm`
+- [docs/android-shell-tools.md](docs/android-shell-tools.md) — bundled
+  BusyBox/OpenSSH: packaging, rebuilding, patches, licensing
+- [docs/input-field.md](docs/input-field.md) — the Aa draft input field
 
 ## License
 

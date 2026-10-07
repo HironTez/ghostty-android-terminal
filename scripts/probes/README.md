@@ -7,16 +7,12 @@ APK**. There is no production asset/build change and no downloaded dependency.
 
 ## Why raw guest syscalls
 
-The v0.8.0 engine gitlink `b51064beb7e7dcbb60ff0a90cbb1b91abed48741` (v1.3.0)
-followed the final `/proc/<pid>/fd/N` link to an absolute host path and prefixed
-the guest rootfs again. Consequently systemd's legacy `fchmodat` fallback
-returned ENOENT for a valid ordinary fd; systemd's mounted-proc error translation
-reported EBADF. The engine this probe was written against,
-`570ec1e0cd379592ca5d581a37f990618e9c85bf` (v1.5.0), already contains upstream
-fix `2c332ad47754f8d6cef74375a2f5b5ce5c3ad1b5`, as does the current pin
-`313e1d9` built on top of it.
-No further engine patch, syscall-452 implementation or fake-EBADF success is
-needed.
+arm64chroot releases before v1.5.0 (e.g. v1.3.0) followed the final
+`/proc/<pid>/fd/N` link to an absolute host path and prefixed the guest rootfs
+again. Consequently systemd's legacy `fchmodat` fallback returned ENOENT for a
+valid ordinary fd; systemd's mounted-proc error translation reported EBADF.
+Upstream fix `2c332ad47754f8d6cef74375a2f5b5ce5c3ad1b5` (in v1.5.0 and later)
+resolves it; this probe keeps it from regressing.
 
 The probe has no libc, CRT, PT_INTERP or PT_DYNAMIC. It directly issues Linux
 AArch64 syscalls 452 (`fchmodat2`), 53 (legacy `fchmodat`), 52 (`fchmod`) and 80
@@ -40,17 +36,17 @@ The guest writes a small key/value status file and atomically renames it when
 complete. Java reads that file, validates every expected key and the real guest
 exit code. No assertion relies on shell stdout, echoed input or PTY markers.
 
-## Rebuild (one compiler/linker worker, no Gradle/device)
+## Rebuild (no Gradle/device)
 
 From the repository root, using the pinned Android NDK:
 
 ```sh
-ANDROID_NDK="$ANDROID_HOME/ndk/28.2.13676358" \
+ANDROID_NDK="$HOME/Android/Sdk/ndk/28.2.13676358" \
   scripts/build-proc-fd-permissions-probe.sh
 ```
 
 The script invokes NDK clang with `-target aarch64-linux-android29 -nostdlib
--static`, explicitly limits LLD to one worker and validates ELF machine 183,
+-static`, limits LLD to one thread and validates ELF machine 183,
 ET_EXEC, absence of interpreter/dynamic linkage and a size below 64 KiB. It uses
 only shell, Python 3 and NDK clang. An optional first argument writes to another
 output path for reproducibility comparison. No QEMU, AArch64 libc, cross GCC,
@@ -78,7 +74,7 @@ at their logged paths for diagnosis.
 To run it alone, use the supported JDK (17–21):
 
 ```sh
-./gradlew --max-workers=1 connectedDebugAndroidTest \
+./gradlew connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.class=io.github.sylirre.terminal.ProcFdPermissionsTest
 ```
 
@@ -92,8 +88,7 @@ The separate native-engine method is skipped unless
 is supplied and `TerminalNative.hasChrootNg()` confirms availability. Its result
 is not evidence about the emulated engine's resolver.
 
-**Validation boundary:** compilation/static checks are not device execution.
-x86_64 Android emulation can prove the guest/common resolver fix but cannot prove
-ARM-to-ARM JIT or physical-device policy behavior. Physical ARM64 Android 17
-interpreter/JIT validation and actual Debian `systemd-sysusers`/apt reproduction
-remain separate, still-pending checks.
+**Validation boundary:** an x86_64 emulator run proves the guest-side resolver
+behavior but not ARM-to-ARM JIT or physical-device policy behavior; run it on
+arm64 hardware for those. The probe isolates the resolver; it does not
+reproduce Debian's `systemd-sysusers`/apt flows end to end.
