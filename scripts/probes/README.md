@@ -16,7 +16,7 @@ reported EBADF. The engine this probe was written against,
 fix `2c332ad47754f8d6cef74375a2f5b5ce5c3ad1b5`, as does the current pin
 `313e1d9` built on top of it.
 No further engine patch, syscall-452 implementation or fake-EBADF success is
-needed. See [release provenance](../../docs/release-package-fix-provenance.md).
+needed.
 
 The probe has no libc, CRT, PT_INTERP or PT_DYNAMIC. It directly issues Linux
 AArch64 syscalls 452 (`fchmodat2`), 53 (legacy `fchmodat`), 52 (`fchmod`) and 80
