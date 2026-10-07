@@ -178,16 +178,31 @@ public final class SessionManager {
                 scrollbackLines, listener, null);
     }
 
-    /** As above, with an output tap attached from the first byte. */
+    /**
+     * As above, with an output tap attached from the first byte. A channel has
+     * one reader: if a session is already open on {@code terminal}, that one
+     * is returned instead (without {@code tap}; the caller attaches to it).
+     * Check and attach are one step, so a headless spawn racing the UI (or
+     * another spawn) cannot open the same terminal twice.
+     */
     public TerminalSession attachVm(VmMachine machine, int terminal, int cols,
             int rows, int cellWidthPx, int cellHeightPx, int scrollbackLines,
             TerminalSession.Listener listener, TerminalSession.OutputTap tap)
             throws IOException {
-        TerminalSession s = new TerminalSession(cols, rows, cellWidthPx,
-                cellHeightPx, scrollbackLines, machine, terminal, listener, tap);
-        register(s);
-        return s;
+        synchronized (vmAttachLock) {
+            TerminalSession open = vmSession(terminal);
+            if (open != null) {
+                if (listener != null && !open.hasListener()) open.setListener(listener);
+                return open;
+            }
+            TerminalSession s = new TerminalSession(cols, rows, cellWidthPx,
+                    cellHeightPx, scrollbackLines, machine, terminal, listener, tap);
+            register(s);
+            return s;
+        }
     }
+
+    private final Object vmAttachLock = new Object();
 
     /**
      * The machine terminals a tab is currently open on, so a caller can pick

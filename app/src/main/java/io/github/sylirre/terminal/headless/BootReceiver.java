@@ -28,7 +28,7 @@ public final class BootReceiver extends BroadcastReceiver {
         if (!SessionService.headlessEnabled(context)) return;
         try {
             // specialUse foreground services may start from BOOT_COMPLETED.
-            SessionService.startHeadless(context, true);
+            SessionService.startHeadless(context, SessionService.headlessWakeLock(context));
         } catch (RuntimeException e) {
             Log.e("BootReceiver", "headless autostart refused", e);
         }

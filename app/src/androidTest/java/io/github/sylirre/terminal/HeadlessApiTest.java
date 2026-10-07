@@ -370,14 +370,37 @@ public class HeadlessApiTest {
     }
 
     @Test
+    public void signalOpReachesExecFromAnotherConnection() throws Exception {
+        try (Client c = new Client(); Client side = new Client()) {
+            JSONObject r = c.request(req("exec").put("type", "shell")
+                    .put("cmd", "echo ready; exec sleep 30"));
+            assertTrue(r.toString(), r.getBoolean("ok"));
+            c.pumpUntilData("ready");
+            JSONObject s = side.request(req("signal").put("pid", r.getInt("pid")).put("sig", 2));
+            assertTrue(s.toString(), s.getBoolean("ok"));
+            int code = c.pumpUntilExit();
+            assertTrue("exit " + code, code == -2 || code == 130);
+        }
+    }
+
+    @Test
+    public void signalOpRefusesUnknownPid() throws Exception {
+        // One request per connection, so this is its own client. No exec has pid 1.
+        try (Client c = new Client()) {
+            JSONObject gone = c.request(req("signal").put("pid", 1).put("sig", 2));
+            assertFalse(gone.toString(), gone.getBoolean("ok"));
+        }
+    }
+
+    @Test
     public void execSignalKillsProcessGroup() throws Exception {
         try (Client c = new Client()) {
             assertTrue(c.request(req("exec").put("type", "shell")
-                    .put("cmd", "echo ready; sleep 30")).getBoolean("ok"));
+                    .put("cmd", "echo ready; exec sleep 30")).getBoolean("ok"));
             c.pumpUntilData("ready");
-            // Let sh reach the fork of sleep: a SIGINT that lands between the
-            // echo and the fork is held by sh until sleep finishes on its own.
-            Thread.sleep(500);
+            // exec: no sh left waiting on a foreground child (which would hold
+            // a SIGINT until sleep ends). Whether it lands on sh just before the
+            // exec or on sleep after, the default disposition ends the group.
             c.send(Frames.SIGNAL, new byte[] {2}); // SIGINT
             int code = c.pumpUntilExit();
             assertTrue("exit " + code, code == -2 || code == 130);
@@ -427,6 +450,8 @@ public class HeadlessApiTest {
             // in the meantime is the reply. The sleep proves an absence, which no
             // condition can poll for; the newline then ends the read either way.
             String probe = "printf '\\033[6n'; read -r reply; echo \"len[${#reply}]\"\n";
+            // mksh drops typeahead when its line editor starts: wait for the prompt.
+            waitFor("prompt", TIMEOUT_MS, () -> screen(s).contains("$"), () -> screen(s));
             s.write(probe);
             Thread.sleep(1000);
             s.write("\n");
@@ -473,6 +498,7 @@ public class HeadlessApiTest {
         SessionCommand cmd = SessionCommand.androidShell(c);
         TerminalSession s = SessionManager.get().create(cmd, 80, 24, 8, 16, 1000, false,
                 null, null);
+        waitFor("prompt", TIMEOUT_MS, () -> screen(s).contains("$"), () -> screen(s));
         s.write("exit 0\n");
         waitFor("reaped", TIMEOUT_MS, () -> SessionManager.get().indexOf(s) < 0);
     }

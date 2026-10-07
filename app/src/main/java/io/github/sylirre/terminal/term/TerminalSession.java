@@ -92,6 +92,15 @@ public final class TerminalSession {
          * most once per session, after the last {@link #onOutput}.
          */
         void onEnd(int exitCode);
+
+        /**
+         * The session is being closed. A tap whose client stopped reading
+         * holds the reader thread in {@link #onOutput} (back-pressure), which
+         * would keep the closed session and its emulator alive; it should let
+         * go of that client if the end is not delivered soon. Must not block.
+         */
+        default void onClosing() {
+        }
     }
 
     /** Process-unique, stable id (the headless API addresses sessions by it). */
@@ -686,6 +695,8 @@ public final class TerminalSession {
             if (closed) return;
             closed = true;
         }
+        OutputTap t = tap;
+        if (t != null) t.onClosing();
         if (vm != null) {
             // Detach only. The guest's getty and whatever it is running belong
             // to the machine, not to this tab; closing our dup of the channel

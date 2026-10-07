@@ -178,6 +178,7 @@ Requests (`"v":1` may be omitted):
 | `{"op":"spawn","type":"userland\|shell\|vm","cols":120,"rows":40,"attach":true}` | `{id,type}`, then DATA both ways, RESIZE up, EXIT down when the session ends. Optional `argv`, `cmd`, `cwd`, `env` replace the login shell (`shell`/`userland`); optional `terminal` picks a guest terminal (`vm`). `"attach":false` returns at once |
 | `{"op":"attach","id":3,"cols":120,"rows":40}` | as spawn. Steals an existing attachment: the previous client is disconnected without an EXIT |
 | `{"op":"kill","id":3}` | `{id}`. An attached client receives EXIT |
+| `{"op":"signal","pid":1234,"sig":2}` | `{pid,sig}`: signals a running `exec` (its process group) from another connection |
 | `{"op":"exec","argv":[...]` or `"cmd":"..."`, `"type":"userland\|shell","cwd":"/root","env":{"K":"V"}}` | `{pid,type}`, then DATA/STDERR down, DATA/EOF/SIGNAL up, EXIT down. `"tty":true` runs it as an attached PTY session instead |
 | `{"op":"install","distro":"alpine"}` | `{distro,version}`, then PROGRESS frames (`extracting` with `percent`, then `done`/`failed`/`already-installed`), then EXIT 0/1 |
 | `{"op":"wakelock","on":true}` | `{wakelock}` |
@@ -203,13 +204,22 @@ session ends.
   Press Enter or resize to get a fresh prompt; full-screen programs redraw on
   resize. For lossless detach/attach run `tmux` in the distro.
 - **Back-pressure.** Output is written to the client synchronously: a client
-  that stops reading stalls the program, like a slow terminal.
+  that stops reading stalls the program, like a slow terminal. Closing the
+  session (`kill`, the tab's close) cuts such a client loose after 3 seconds,
+  so it cannot keep a closed session alive.
 - **Exec.** It runs on pipes, not a PTY, so programs that insist on a TTY
   (password prompts, some installers) behave differently. Use `exec -t`. In the
   userland, `argv` runs as `/bin/sh -c 'exec "$@"' sh ARGV...` (PATH lookup,
   argv untouched) and `cmd` as `/bin/sh -c CMD`, both with the configured
   identity, home, locale and PATH. A client that disconnects mid-command
-  sends it SIGHUP, then SIGKILL two seconds later.
+  sends it SIGHUP, then SIGKILL two seconds later. stdin is queued up to
+  8 MiB for a command that is not reading it, so SIGNAL frames (Ctrl-C) still
+  get through; beyond that the client is back-pressured, and a SIGNAL frame
+  waits behind the stdin it sent first. gterm then delivers the signal through
+  the `signal` op on a second connection instead.
+- **cwd.** An explicit `cwd` must name an existing directory (inside the
+  rootfs for `userland`), or the request fails. It is never replaced by the
+  home fallback the settings get, so a command cannot run somewhere else.
 - **Exited sessions** are reaped by `SessionManager` when no Activity is
   listening; with the UI open, the Activity's usual tab logic runs.
 - **Guest machine.** `spawn type=vm` boots the VM with the app's VM settings
@@ -221,6 +231,15 @@ session ends.
   (`UserlandRootfs/`). It runs the same `UserlandSetup.install` as the
   onboarding wizard, persists the same settings (distro, onboarding done,
   derived login shell and home), and never replaces an installed rootfs.
+- **Wake lock.** The last explicit choice (`gterm start --no-wakelock`, the
+  `wakelock` op, the notification toggle) is kept and reapplied when headless
+  mode comes back by itself (sticky restart, boot autostart).
+- **The key and chroot-ng guests.** The per-start key lives in the app's
+  memory, and every session's process is forked from it. arm64chroot guests
+  cannot reach that memory, but guests of the optional native chroot-ng engine
+  run in the forked address space and can. A cached `GTERM_KEY` therefore only
+  proves "this app's uid", not "this server", while such guests run.
+  Without `GTERM_KEY`, gterm reads the key from the live dump each time.
 
 ## Troubleshooting
 
