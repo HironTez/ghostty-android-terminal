@@ -21,10 +21,14 @@ applies to the app's existing native libraries, increasing installed size.
 private, absolute symlink aliases under `files/android-bin`. It replaces stale
 managed symlinks atomically after updates and prunes managed links an update
 no longer provides (and pending links a crash left behind). A managed link
-is one that points at a bundled `lib*.so`. It never overwrites a user's file,
-or a symlink the user pointed elsewhere, at an alias name: that one alias is
-skipped and logged, so a conflict can never stop a shell from opening. A missing or
-non-executable bundled tool is still a hard error. The executed inode is installer-managed code, **not a writable copy in
+is one that points at a bundled `lib*.so` inside an app `nativeLibraryDir`
+(this install's, or an earlier install's of the same package). It never
+overwrites a user's file, or a symlink the user pointed elsewhere, at an alias
+name: that one alias is skipped and logged. `prepare` itself fails on a missing
+or non-executable bundled tool, or when `files/android-bin` cannot be used;
+the shell then still opens, with `PATH=/system/bin` and a logged warning, so
+the plain shell — the app's last-resort fallback — always starts. The
+executed inode is installer-managed code, **not a writable copy in
 app data**. This is important for targetSdk 29+'s app-data W^X restriction.
 
 Every Android shell caller uses the Context-based `SessionCommand` factory —
