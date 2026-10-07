@@ -23,7 +23,9 @@ library only (POSIX hosts: Linux, macOS). See docs/headless-api.md.
 
 Interactive sessions put the local tty in raw mode and forward window size
 changes. Ctrl-] detaches (the session keeps running; `gterm attach ID`).
-exec exits with the remote command's exit status (128+N for signal N).
+exec exits with the remote command's exit status (128+N for signal N);
+Ctrl-C is forwarded, and a second Ctrl-C within a second makes gterm itself
+give up (exit 130), which hangs the remote command up.
 
 Every connection first checks that the server is the app: it answers a
 random nonce with an HMAC under a per-start key that only the adb shell can
@@ -118,15 +120,23 @@ class Conn:
             self.sock = socket.create_connection(("127.0.0.1", port()), timeout=10)
         except OSError as e:
             die("cannot connect to 127.0.0.1:%d: %s" % (port(), e))
-        self.sock.settimeout(None)
         self.buf = b""
         self.verify(key)
+        self.sock.settimeout(None)
+
+    VERIFY_TIMEOUT = 15  # seconds; the app answers at once, an impostor may never
 
     def verify(self, key):
         """Nothing else is sent before the server proves it holds the key."""
         nonce = os.urandom(16).hex()
-        # Not request(): its error path would print whatever an impostor sent.
-        resp = self.request({"op": "hello", "nonce": nonce}, check=False)
+        self.sock.settimeout(self.VERIFY_TIMEOUT)
+        try:
+            # check=False: request()'s error path would print what an impostor sent.
+            resp = self.request({"op": "hello", "nonce": nonce}, check=False)
+        except socket.timeout:
+            self.sock.close()
+            die("server identity check timed out: nothing on %s answered within %ds"
+                % (SOCKET_NAME, self.VERIFY_TIMEOUT))
         try:
             want = hmac.new(bytes.fromhex(key), ("gterm-hello-v1:" + nonce).encode(),
                             hashlib.sha256).hexdigest()
@@ -192,29 +202,9 @@ class Conn:
             select.select([], [self.sock], [])
             self.flush_some()
 
-    def frames(self):
-        """Yields (type, payload) until the server closes the connection."""
-        while True:
-            while len(self.buf) >= 5:
-                ftype, n = struct.unpack(">BI", self.buf[:5])
-                if len(self.buf) < 5 + n:
-                    break
-                payload, self.buf = self.buf[5:5 + n], self.buf[5 + n:]
-                yield ftype, payload
-            chunk = self.sock.recv(65536)
-            if not chunk:
-                return
-            self.buf += chunk
-
-    def read_available(self):
-        """Non-blocking step for select loops: returns complete frames, or None at EOF."""
-        try:
-            chunk = self.sock.recv(65536)
-        except BlockingIOError:
-            return []
-        if not chunk:
-            return None
-        self.buf += chunk
+    def buffered_frames(self):
+        """Takes the complete frames already in the buffer (e.g. those that
+        arrived in the same recv as the response line)."""
         out = []
         while len(self.buf) >= 5:
             ftype, n = struct.unpack(">BI", self.buf[:5])
@@ -223,6 +213,26 @@ class Conn:
             out.append((ftype, self.buf[5:5 + n]))
             self.buf = self.buf[5 + n:]
         return out
+
+    def frames(self):
+        """Yields (type, payload) until the server closes the connection."""
+        while True:
+            yield from self.buffered_frames()
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                return
+            self.buf += chunk
+
+    def read_available(self):
+        """Non-blocking step for select loops: returns (complete frames, eof).
+        At EOF the frames still buffered come with it: the server sends EXIT
+        and closes, and both can arrive in one go."""
+        try:
+            chunk = self.sock.recv(65536)
+        except BlockingIOError:
+            return [], False
+        self.buf += chunk
+        return self.buffered_frames(), not chunk
 
 
 def exit_status(code):
@@ -278,14 +288,9 @@ def interactive(req):
             # TCSANOW, not setraw's default TCSAFLUSH: keep typeahead.
             ttymod.setraw(sys.stdin.fileno(), termios.TCSANOW)
         # Frames that arrived along with the response line.
-        pending = []
-        while len(conn.buf) >= 5:
-            ftype, n = struct.unpack(">BI", conn.buf[:5])
-            if len(conn.buf) < 5 + n:
-                break
-            pending.append((ftype, conn.buf[5:5 + n]))
-            conn.buf = conn.buf[5 + n:]
+        pending = conn.buffered_frames()
         stdin_open = True
+        eof = False
         while code is None:
             for ftype, payload in pending:
                 if ftype == DATA:
@@ -293,7 +298,7 @@ def interactive(req):
                 elif ftype == EXIT:
                     code = struct.unpack(">i", payload)[0]
             pending = []
-            if code is not None:
+            if code is not None or eof:
                 break
             fds = [conn.sock, rfd] + ([sys.stdin] if stdin_open and not conn.backlogged() else [])
             ready, writable, _ = select.select(fds, [conn.sock] if conn.wants_write() else [], [])
@@ -317,10 +322,7 @@ def interactive(req):
                     break
                 conn.send(DATA, data)
             if conn.sock in ready:
-                got = conn.read_available()
-                if got is None:
-                    break
-                pending = got
+                pending, eof = conn.read_available()
     except OSError:
         code = None  # connection reset: reported below like a close
     finally:
@@ -343,6 +345,8 @@ def interactive(req):
 
 def cmd_start(a):
     extra = ["--ez", "wakelock", "false"] if a.no_wakelock else []
+    # Device time, for the log lookup below ("MM-DD hh:mm:ss.mmm", logcat -T).
+    since = adb("shell", "date '+%m-%d %H:%M:%S.000'", capture=True).stdout.strip()
     adb("shell", "am", "start-foreground-service", "-n", SERVICE,
         "-a", PKG + ".headless.START", *extra)
     for _ in range(20):
@@ -353,6 +357,13 @@ def cmd_start(a):
         if m and m.group(1).startswith("failed"):
             die("headless server %s (another app holding the socket name?)" % m.group(1).strip())
         time.sleep(0.25)
+    # With no session to keep, a service whose server failed stops itself,
+    # and its dump goes with it; the reason is still in the log.
+    log = adb("logcat", "-d", "-T", since, "-s", "SessionService:E",
+              check=False, capture=True).stdout or ""
+    m = re.findall(r"headless server failed to start: (.*)", log)
+    if m:
+        die("headless server failed: %s (another app holding the socket name?)" % m[-1].strip())
     die("headless server did not come up (adb logcat -s SessionService HeadlessServer)")
 
 
@@ -490,6 +501,20 @@ def cmd_exec(a):
         conn.send(EOF)
     code = None
     out, err = sys.stdout.fileno(), sys.stderr.fileno()
+
+    def handle(frames):
+        nonlocal code
+        for ftype, payload in frames:
+            if ftype == DATA:
+                write_out(out, payload)
+            elif ftype == STDERR:
+                write_out(err, payload)
+            elif ftype == EXIT:
+                code = struct.unpack(">i", payload)[0]
+
+    # Output (even the EXIT) of a quick command can arrive with the response.
+    handle(conn.buffered_frames())
+    last_int = None
     while code is None:
         fds = [conn.sock, sig_r] + ([sys.stdin] if stdin_open and not conn.backlogged() else [])
         ready, writable, _ = select.select(fds, [conn.sock] if conn.wants_write() else [], [])
@@ -497,6 +522,14 @@ def cmd_exec(a):
             conn.flush_some()
         if sig_r in ready:
             for signum in os.read(sig_r, 64):
+                if signum == signal.SIGINT:
+                    # A second Ctrl-C within a second gives up locally (like
+                    # ssh): the server then hangs the command up.
+                    now = time.monotonic()
+                    if last_int is not None and now - last_int < 1.0:
+                        conn.sock.close()
+                        die("interrupted; the remote command is hung up", 130)
+                    last_int = now
                 deliver(signum)
         if sys.stdin in ready:
             data = os.read(sys.stdin.fileno(), 65536)
@@ -506,16 +539,10 @@ def cmd_exec(a):
                 conn.send(EOF)
                 stdin_open = False
         if conn.sock in ready:
-            got = conn.read_available()
-            if got is None:
+            got, eof = conn.read_available()
+            handle(got)
+            if eof:
                 break
-            for ftype, payload in got:
-                if ftype == DATA:
-                    write_out(out, payload)
-                elif ftype == STDERR:
-                    write_out(err, payload)
-                elif ftype == EXIT:
-                    code = struct.unpack(">i", payload)[0]
     conn.sock.close()
     if code is None:
         die("connection closed without an exit status")
