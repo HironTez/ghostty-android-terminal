@@ -1070,6 +1070,12 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
                 // Setup-only mode: open a tab into the fresh userland.
                 createSession(true);
             }
+            // A session created while the wizard ran (headless API) was not
+            // switched to then (onSessionsChanged waits for onboarding); a
+            // canceled wizard spawns nothing, so adopt it now.
+            if (current == null && !sessions.isEmpty()) {
+                switchTo(sessions.sessions().get(0));
+            }
             return;
         }
         // Settings hands back the terminal-coupled userland flows to run here.
