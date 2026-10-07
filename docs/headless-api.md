@@ -136,7 +136,8 @@ Closing the client also only detaches. The session ends when its shell exits,
 or with `gterm kill`. `gterm exec` exits with the remote status (128+N when
 the command died of signal N). gterm's own failures (no server, a refused
 request, a failed identity check) exit 255, like ssh. Ctrl-C and other signals are forwarded to the
-remote process group. Without `--argv`, the words after `--` are joined and
+remote process group; a second Ctrl-C within a second makes gterm give up
+locally (exit 130, like ssh), which hangs the remote command up. Without `--argv`, the words after `--` are joined and
 run by the target's `sh -c` (ssh semantics). `exec` runs in the userland when
 a usable rootfs is installed, otherwise in `/system/bin/sh`. `--type` picks
 explicitly.
@@ -152,11 +153,13 @@ stty raw -echo; (printf 'RAW spawn userland 120 40\n'; cat) | nc 127.0.0.1 7777;
 
 One connection carries one request. The client sends a single JSON line
 terminated by `\n`, optionally preceded by a `hello` line (see Auth) whose
-answer comes first. A client has 30 seconds to send its request; at most 32
-connections are served at once. The server answers with one JSON line:
-`{"ok":true,"v":1,...}` or `{"ok":false,"v":1,"error":"..."}`. For
-streaming ops both sides then switch to frames,
-`type:u8 | len:u32 big-endian | payload`:
+answer comes first. A request line may be at most 64 KiB; a longer one is
+answered with the error `request line too long` and the connection closes. A
+client has 30 seconds to send its request; at most 32 connections are served
+at once. The server answers with one JSON line: `{"ok":true,"v":1,...}` or
+`{"ok":false,"v":1,"error":"..."}`. For streaming ops both sides then switch
+to frames, `type:u8 | len:u32 big-endian | payload`. A frame from the client
+may carry at most 1 MiB of payload; a larger one closes the connection.
 
 | Frame | Dir | Payload |
 | --- | --- | --- |
@@ -172,11 +175,11 @@ Requests (`"v":1` may be omitted):
 
 | Request | Response, then |
 | --- | --- |
-| `{"op":"hello","nonce":"<16..128 hex>"}` | `{proof}`; then the real request follows on the same connection |
+| `{"op":"hello","nonce":"<16..128 lowercase hex digits>"}` | `{proof}`; then the real request follows on the same connection |
 | `{"op":"status"}` | `rootfs{installed,usable,distro}`, `distros[{id,version,asset}]`, `sessions`, `vm{running,images_installed,images_bundled,terminals}`, `wakelock`, `autostart`, `onboarding_completed`, `uid`, `version` |
 | `{"op":"list"}` | `sessions[{id,type,label,title,cols,rows,exit,attached,ui,vm_terminal?}]` |
 | `{"op":"spawn","type":"userland\|shell\|vm","cols":120,"rows":40,"attach":true}` | `{id,type}`, then DATA both ways, RESIZE up, EXIT down when the session ends. Optional `argv`, `cmd`, `cwd`, `env` replace the login shell (`shell`/`userland`); optional `terminal` picks a guest terminal (`vm`). `"attach":false` returns at once |
-| `{"op":"attach","id":3,"cols":120,"rows":40}` | as spawn. Steals an existing attachment: the previous client is disconnected without an EXIT |
+| `{"op":"attach","id":3,"cols":120,"rows":40}` | `{id,type,cols,rows}` (the size now in effect; `cols`/`rows` may be omitted to keep it), then as spawn. Steals an existing attachment: the previous client is disconnected without an EXIT |
 | `{"op":"kill","id":3}` | `{id}`. An attached client receives EXIT |
 | `{"op":"signal","pid":1234,"sig":2}` | `{pid,sig}`: signals a running `exec` (its process group) from another connection |
 | `{"op":"exec","argv":[...]` or `"cmd":"..."`, `"type":"userland\|shell","cwd":"/root","env":{"K":"V"}}` | `{pid,type}`, then DATA/STDERR down, DATA/EOF/SIGNAL up, EXIT down. `"tty":true` runs it as an attached PTY session instead |
@@ -188,7 +191,9 @@ Requests (`"v":1` may be omitted):
 Raw mode: a first line `RAW spawn [shell|userland|vm] [cols rows]` or
 `RAW attach <id> [cols rows]` turns the connection into unframed bytes both
 ways, with no response line and no EXIT. The connection closes when the
-session ends.
+session ends. Errors still come back as one line before the close: a
+malformed `RAW` line as plain text (`error: usage: ...`), anything else (an
+unknown session, a failed spawn) as the usual JSON error line.
 
 ### Semantics worth knowing
 
@@ -216,7 +221,13 @@ session ends.
   8 MiB for a command that is not reading it, so SIGNAL frames (Ctrl-C) still
   get through; beyond that the client is back-pressured, and a SIGNAL frame
   waits behind the stdin it sent first. gterm then delivers the signal through
-  the `signal` op on a second connection instead.
+  the `signal` op on a second connection instead. A client that disconnects
+  while back-pressured is still noticed and hangs the command up.
+- **Exec output.** After the command exits, its output is drained to the
+  client however slowly the client reads; EXIT is the last frame. Only
+  silence is bounded: once neither stdout nor stderr has produced anything
+  for two seconds (a background process it started holds the pipes open),
+  EXIT is sent and the rest is dropped.
 - **cwd.** An explicit `cwd` must name an existing directory (inside the
   rootfs for `userland`), or the request fails. It is never replaced by the
   home fallback the settings get, so a command cannot run somewhere else.
