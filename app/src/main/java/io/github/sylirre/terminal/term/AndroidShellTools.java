@@ -35,7 +35,7 @@ public final class AndroidShellTools {
             "paste", "printf", "pwd", "readlink", "realpath", "rm", "rmdir", "sed",
             "seq", "sha1sum", "sha256sum", "sha512sum", "sleep", "sort", "split",
             "stat", "strings", "stty", "tail", "tar", "tee", "test", "touch", "tr",
-            "true", "unexpand", "uniq", "unlzma", "unxz", "unzip", "uudecode",
+            "true", "uname", "unexpand", "uniq", "unlzma", "unxz", "unzip", "uudecode",
             "uuencode", "vi", "wc", "whoami", "xargs", "xz", "xzcat", "yes", "zcat"
     };
 

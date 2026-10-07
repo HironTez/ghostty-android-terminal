@@ -4,7 +4,7 @@
   "api": 29,
   "abi": "arm64-v8a",
   "outputs": {
-    "libbusybox.so": "b0c31cb6b94e4bd53dda29153cb99e0abef5f10b529df2856809674a00b6b4e3",
+    "libbusybox.so": "df5f991348148503f31b60ee723e039059647a78605c8a89247e529dcc47b5c6",
     "libssh.so": "1cdbd1144d7e38507a99641f9da84ee716f45492bbb11003b6f57c061b6cad0e",
     "libscp.so": "95e0b2f83817891a69c254bc1e1a27057b0f438447219025d9fd6543add52d51",
     "libsftp.so": "38acedab809ff21ec59a10fa54316bb00e37407b0ce0a8b8a1125dff870146d0",
@@ -26,8 +26,8 @@
   },
   "inputs": {
     "native/android-tools/sources.lock": "2293c9de2d3b75eed2f839addc74c86c0d2afc20070705052100cf6770c44b5d",
-    "native/android-tools/busybox.config": "24a7b18da67ae545d4be856b2cdcfcb8333f29cae760fc8c54f25b26d9dae383",
-    "scripts/build-android-tools.sh": "78335938b9ea3283e88620c8967ee225024f7f76047f3914792eb12f1350262e",
+    "native/android-tools/busybox.config": "1e15ec9fb6a9d06623ac2bc707d5facc727894529bdd2c58fec4a001b09614a0",
+    "scripts/build-android-tools.sh": "b1f7ca2b10856bd1c3e5cdc4613c4669c599817166d97f78174b7827f492ec39",
     "scripts/fetch-android-tools.sh": "822c183565dc8c5dce6642b6c5c2c2add20a24831cf7ade620c3f0c0b2c398cc",
     "scripts/verify-android-tools.py": "1a36d166a31e7cac562ae2a76003fbd6bcd1e22e3a97ab4214c78667c1af01fc",
     "scripts/bundle-busybox-source.py": "a739bcc8e8eb91ebd9ce6b2c8df8e629ee8bf90d3ff82b5a5ea54ba8d361ea5f",
