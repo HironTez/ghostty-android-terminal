@@ -128,6 +128,15 @@ public class TerminalInputFieldUiTest {
         return ((TerminalView) activity.findViewById(R.id.terminal)).session();
     }
 
+    /** The last non-blank screen line, trimmed (where the prompt sits). */
+    private String lastLine() {
+        String[] lines = screen().split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            if (!lines[i].trim().isEmpty()) return lines[i].trim();
+        }
+        return "";
+    }
+
     private String screen() {
         AtomicReference<String> result = new AtomicReference<>("");
         scenario.onActivity(a -> {
@@ -279,6 +288,10 @@ public class TerminalInputFieldUiTest {
             waitFor("explicit Run output", TIMEOUT_MS,
                     () -> runMarker.exists() && outputLine(runOutput), this::screen);
             assertTrue("Run marker removable", runMarker.delete());
+            // Settle on the fresh prompt first: a stray Enter would add a new
+            // prompt line, which the marker file alone can never show.
+            waitFor("prompt after Run", TIMEOUT_MS, () -> lastLine().endsWith("$"), this::screen);
+            String settled = screen();
             scenario.onActivity(a -> {
                 assertEquals("", editor(a).getText().toString());
                 assertEquals(-1, BaseInputConnection.getComposingSpanStart(editor(a).getText()));
@@ -288,6 +301,7 @@ public class TerminalInputFieldUiTest {
             });
             assertNeverWithin("empty Run must not re-run the previous command",
                     NOT_EXECUTED_WINDOW_MS, runMarker::exists);
+            assertEquals("empty Run must not send Enter", settled, screen());
         } finally {
             sendMarker.delete();
             runMarker.delete();
