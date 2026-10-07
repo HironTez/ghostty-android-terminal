@@ -315,6 +315,20 @@ public class HeadlessApiTest {
 
     // --- exec -----------------------------------------------------------------
 
+    /** Android-shell exec goes through the Context factory: bundled tools on PATH. */
+    @Test
+    public void execAndroidShellHasBundledTools() throws Exception {
+        try (Client c = new Client()) {
+            JSONObject r = c.request(req("exec").put("type", "shell")
+                    .put("cmd", "command -v ssh; busybox echo bb-ok"));
+            assertTrue(r.toString(), r.getBoolean("ok"));
+            assertEquals(0, c.pumpUntilExit());
+            String out = c.data();
+            assertTrue(out, out.matches(
+                    "(?s).*io\\.github\\.sylirre\\.terminal/files/android-bin/ssh\nbb-ok\n"));
+        }
+    }
+
     @Test
     public void execSeparatesStreamsAndReturnsExitCode() throws Exception {
         try (Client c = new Client()) {
