@@ -1,25 +1,42 @@
 {
+  "schema": 1,
   "ndk": "28.2.13676358",
   "api": 29,
   "abi": "x86_64",
   "outputs": {
     "libbusybox.so": "f403e34feaa6dea8654f4ae48867900b70fc8fff0cb3ce94dd0c25a14ac670a2",
-    "libssh.so": "80e9b6d823ad7e5acb48f4d299ecb8f3484b76d73cdc15ef023c4df173fb0c8a",
+    "libssh.so": "a8f3d1ddd8fe1e1c51c8105a41b31a7ff8622e63041fdabaa3e9ffe8fc423000",
     "libscp.so": "6685bc7f5da37daaea252a4a53ebbae3a4d72e80cb793bd6cc4165cf561d1da0",
     "libsftp.so": "4253eca2982ba58aceb083ebd7bd9f473d17e7158ce9438ceaeac228479d5395",
-    "libssh-keygen.so": "5edf2b4ba0cdbc392aa8797790f236a83f1ab2167ef04d2fb6d5ee761cd7dd7d"
+    "libssh-keygen.so": "e8ca4d99dd08251ae4f72d98c67f1b6f78cf226fc618a6eaaf22460186956c54"
+  },
+  "sources": {
+    "busybox": {
+      "version": "1.37.0",
+      "sha256": "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
+    },
+    "openssl": {
+      "version": "3.5.9",
+      "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a"
+    },
+    "openssh": {
+      "version": "10.5p1",
+      "sha256": "d44d28a839ea9daf969cc69150fde59910b2b39361dad81a3bd6cbd19218db11"
+    }
   },
   "inputs": {
     "native/android-tools/sources.lock": "2293c9de2d3b75eed2f839addc74c86c0d2afc20070705052100cf6770c44b5d",
     "native/android-tools/busybox.config": "24a7b18da67ae545d4be856b2cdcfcb8333f29cae760fc8c54f25b26d9dae383",
-    "scripts/build-android-tools.sh": "861ffed2ee4cea9d938c971f7f7aa6705564077f607827d9e97456e81ce1f815",
-    "scripts/fetch-android-tools.sh": "cddb44f3814cdf80579a8ad670da7e2fd28972339dca35dddaec97be95a91722",
-    "scripts/verify-android-tools.py": "40ac52282bf15f2fef0994a066a404186ea2cd6ec98fcab14aa002c747a27d83",
-    "scripts/bundle-busybox-source.py": "ae8f4e65cb341476173c626e94544f9dd4be5af0f787aa5ca71367573cb1f671",
+    "scripts/build-android-tools.sh": "78335938b9ea3283e88620c8967ee225024f7f76047f3914792eb12f1350262e",
+    "scripts/fetch-android-tools.sh": "822c183565dc8c5dce6642b6c5c2c2add20a24831cf7ade620c3f0c0b2c398cc",
+    "scripts/verify-android-tools.py": "1a36d166a31e7cac562ae2a76003fbd6bcd1e22e3a97ab4214c78667c1af01fc",
+    "scripts/bundle-busybox-source.py": "a739bcc8e8eb91ebd9ce6b2c8df8e629ee8bf90d3ff82b5a5ea54ba8d361ea5f",
     "scripts/android-tools-notices.py": "48041ee283145a23d152a4564f55777804be9202e6a86d7824b56eed7a2e26a6",
-    "native/android-tools/patches/busybox/0001-apk-name.patch": "69b6d20854f37161863f09ae9cd8432f2ffcdc315b3d41130d32161b61ac4162",
-    "native/android-tools/patches/openssh/0001-home-and-backup.patch": "a5ec143826f46d7381c4844c48ee9619eb309cda5e47a3d14b12c74aecd37fc6",
+    "native/android-tools/patches/busybox/0001-apk-name.patch": "2edcc5cdca59abc344a1df4026b899cb752dc75554440fc55017544baef3f43b",
+    "native/android-tools/patches/openssh/0001-android-home-and-bzero.patch": "641f6939adf46fdaac1eafacb5cda58abef03109c6dbc315a9612415c9b4856c",
     "native/android-tools/patches/openssh/0002-android-public-resolver.patch": "c61bfd68124c91b8deddd2c91d77e12281209d7447876309a878c7a18dfda9a7",
+    "native/android-tools/patches/openssh/0003-atomic-known-hosts.patch": "486790df69072c23380aa6e80356ae0532fd390e95d6108a34f6ce8a97233a2c",
+    "native/android-tools/patches/openssh/android-known-hosts.h": "1c163429ee1e0831e6fcb23acca1db8cf811c8b435204df400eb364725d2a649",
     "native/android-tools/patches/openssh/android-passwd.h": "bbfc12e55bc5dfdbcdc707a718207b0bdefb77a6b39c524a340a50efc9bfdd29"
   }
 }

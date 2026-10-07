@@ -1,6 +1,10 @@
 #!/bin/sh
 # Build standalone Android PIE executables, never libraries linked into JNI.
 # Requires make, a host C compiler, Perl, patch, Python 3, tar, curl and NDK r28c.
+#
+# COMPONENTS=busybox builds only BusyBox (e.g. inside the extracted
+# busybox-corresponding-source.tar.xz, which carries no OpenSSH/OpenSSL
+# archives) and prints the hashes instead of replacing prebuilts/manifests.
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 TOOLS=$ROOT/native/android-tools
@@ -10,6 +14,13 @@ JOBS=${JOBS:-2}
 case "$JOBS" in 1|2) ;; *) echo 'JOBS must be 1 or 2' >&2; exit 1;; esac
 HOSTCC=${HOSTCC:-cc}
 MAKE=${MAKE:-make}
+COMPONENTS=${COMPONENTS:-busybox openssl openssh}
+case "$COMPONENTS" in
+    'busybox openssl openssh') FULL=1;;
+    busybox) FULL=0;;
+    *) echo 'COMPONENTS must be "busybox" or unset (all)' >&2; exit 1;;
+esac
+has() { case " $COMPONENTS " in *" $1 "*) return 0;; esac; return 1; }
 export LC_ALL=C TZ=UTC SOURCE_DATE_EPOCH=1786416528
 export ANDROID_NDK_ROOT=$NDK
 export PATH="$TC:$PATH"
@@ -18,7 +29,8 @@ import pathlib, sys
 if 'Pkg.Revision = 28.2.13676358' not in pathlib.Path(sys.argv[1]).read_text():
     raise SystemExit('Use pinned Android NDK 28.2.13676358')
 PY
-"$ROOT/scripts/fetch-android-tools.sh"
+# shellcheck disable=SC2086
+"$ROOT/scripts/fetch-android-tools.sh" $COMPONENTS
 for ABI in ${ABIS:-arm64-v8a x86_64}; do
     case "$ABI" in
         arm64-v8a) TRIPLE=aarch64-linux-android; SSL_TARGET=android-arm64;;
@@ -29,7 +41,7 @@ for ABI in ${ABIS:-arm64-v8a x86_64}; do
     OUT=$TOOLS/prebuilt/$ABI
     mkdir -p "$WORK" "$OUT"
     # Extract clean trees each time; stale config must not affect the binary.
-    for component in busybox openssl openssh; do
+    for component in $COMPONENTS; do
         python3 - "$TOOLS" "$WORK" "$component" <<'PY'
 import json, pathlib, shutil, sys, tarfile
 root, work, component = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
@@ -51,7 +63,7 @@ PY
     export CC AR=$TC/llvm-ar RANLIB=$TC/llvm-ranlib
     FLAGS="-O2 -fPIC -ffile-prefix-map=$WORK=/android-tools -fdebug-prefix-map=$WORK=/android-tools"
     LD_FLAGS='-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -Wl,-z,relro,-z,now'
-    (
+    if has busybox; then (
         cd "$WORK/busybox"
         patch -p1 < "$TOOLS/patches/busybox/0001-apk-name.patch"
         "$MAKE" HOSTCC="$HOSTCC" allnoconfig >/dev/null
@@ -68,10 +80,15 @@ PY
         "$MAKE" -j"$JOBS" HOSTCC="$HOSTCC" CC="$CC" AR="$AR" STRIP="$TC/llvm-strip" \
             CFLAGS="$FLAGS" LDFLAGS="$LD_FLAGS" busybox
         "$TC/llvm-strip" --strip-unneeded busybox
-        cp busybox "$OUT/libbusybox.so"
-        cp .config "$OUT/busybox.config"
-    )
-    (
+        if [ "$FULL" = 1 ]; then
+            cp busybox "$OUT/libbusybox.so"
+            cp .config "$OUT/busybox.config"
+        else
+            echo "$ABI rebuilt BusyBox (compare with prebuilt/$ABI):"
+            sha256sum busybox .config
+        fi
+    ); fi
+    if has openssl; then (
         cd "$WORK/openssl"
         perl ./Configure "$SSL_TARGET" -D__ANDROID_API__=29 $FLAGS \
             no-shared no-module no-tests no-apps no-dso no-engine \
@@ -81,12 +98,12 @@ PY
         mkdir -p "$WORK/crypto/lib" "$WORK/crypto/include"
         cp libcrypto.a "$WORK/crypto/lib/"
         cp -R include/openssl "$WORK/crypto/include/"
-    )
-    (
+    ); fi
+    if has openssh; then (
         cd "$WORK/openssh"
-        patch -p1 < "$TOOLS/patches/openssh/0001-home-and-backup.patch"
-        patch -p1 < "$TOOLS/patches/openssh/0002-android-public-resolver.patch"
-        cp "$TOOLS/patches/openssh/android-passwd.h" .
+        for p in "$TOOLS"/patches/openssh/*.patch; do patch -p1 < "$p"; done
+        cp "$TOOLS/patches/openssh/android-passwd.h" \
+            "$TOOLS/patches/openssh/android-known-hosts.h" .
         CC="$CC" AR="$AR" RANLIB="$RANLIB" CFLAGS="$FLAGS -fPIE" \
             CPPFLAGS="-I$WORK/crypto/include" \
             LDFLAGS="$LD_FLAGS -pie -L$WORK/crypto/lib" \
@@ -104,9 +121,11 @@ PY
             "$TC/llvm-strip" --strip-unneeded "$cmd"
             cp "$cmd" "$OUT/lib$cmd.so"
         done
-    )
+    ); fi
+    [ "$FULL" = 1 ] || continue
     chmod 755 "$OUT"/lib*.so
-    python3 "$ROOT/scripts/verify-android-tools.py" "$NDK" "$ABI"
+    python3 "$ROOT/scripts/verify-android-tools.py" --record "$NDK" "$ABI"
 done
+[ "$FULL" = 1 ] || exit 0
 python3 "$ROOT/scripts/android-tools-notices.py"
 python3 "$ROOT/scripts/bundle-busybox-source.py"

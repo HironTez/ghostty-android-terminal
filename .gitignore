@@ -14,3 +14,11 @@ UserlandRootfs/
 # Guest machine images for the VM session type (bundled as APK assets when
 # present; never committed — see scripts/fetch-vm-images.sh)
 VmImages/
+
+# Android shell-tools build scratch and fetched OpenSSH/OpenSSL archives
+# (re-fetched and checksum-verified by scripts/fetch-android-tools.sh). The
+# BusyBox upstream archive stays committed: it is GPL corresponding source.
+native/android-tools/.build/
+native/android-tools/sources/*
+!native/android-tools/sources/busybox-*.tar.bz2
+native/android-tools/sources/*.part
