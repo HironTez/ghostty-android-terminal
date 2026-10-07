@@ -5,6 +5,7 @@ package io.github.sylirre.terminal;
 
 import static io.github.sylirre.terminal.TestUtil.waitFor;
 
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assume.assumeTrue;
 
 import android.content.Context;
@@ -109,6 +110,17 @@ public class UserlandAlpineSessionTest {
         // --fake-id fakes uid 0.
         session.write("echo \"arch=$(uname -m) uid=$(id -u)\"\n");
         waitForOnScreen("arch=aarch64 uid=0");
+    }
+
+    @Test
+    public void guestPathHasNoAndroidTools() {
+        // The bundled Android BusyBox/OpenSSH belong to the plain Android
+        // shell only; the guest keeps its own PATH. The split marker keeps the
+        // typed command line's echo from matching.
+        session.write("case \"$PATH\" in *android-bin*) echo LEAK\"\"ED;; "
+                + "*) echo PATH\"\"-CLEAN;; esac\n");
+        waitForOnScreen("PATH-CLEAN");
+        assertFalse(screen(), screen().contains("LEAKED"));
     }
 
     @Test

@@ -93,6 +93,12 @@ public class AndroidShellToolsTest {
         String env = String.join("\n", SessionCommand.androidShell(context).env);
         assertTrue(env, env.contains("PATH=" + bin.getAbsolutePath() + ":/system/bin"));
         assertTrue(env, env.contains("SHELL=/system/bin/sh"));
+        // The live shell must resolve these through the aliases, not
+        // /system/bin: toybox (and Android's awk) would pass the pipeline and
+        // idiom checks below just as well, so those alone prove nothing.
+        String b = bin.getAbsolutePath() + "/";
+        assertEquals(b + "awk\n" + b + "grep\n" + b + "head\n" + b + "tar\n" + b + "ssh\n",
+                run("for c in awk grep head tar ssh; do command -v $c; done", 0));
         assertTrue(run("busybox --list", 0).contains("awk\n"));
         assertTrue(run(quote(context.getApplicationInfo().nativeLibraryDir + "/libbusybox.so") + " --list", 0).contains("tar\n"));
         assertEquals("BETA\n", run("printf 'alpha\\nbeta\\n' | grep beta | awk '{print toupper($0)}'", 0));
