@@ -938,18 +938,17 @@ final class HeadlessConnection implements Runnable {
         if (fd == null) return true;
         StructPollfd pfd = new StructPollfd();
         pfd.fd = fd;
-        pfd.events = (short) (OsConstants.POLLHUP | POLLRDHUP);
+        // POLLHUP alone: a client that only shut its writing side after its
+        // last stdin frame (POLLRDHUP) still reads the output and the EXIT.
+        pfd.events = (short) OsConstants.POLLHUP;
         try {
             if (Os.poll(new StructPollfd[] {pfd}, 0) <= 0) return false;
         } catch (ErrnoException e) {
             return false;
         }
-        return (pfd.revents & (OsConstants.POLLHUP | POLLRDHUP | OsConstants.POLLERR
+        return (pfd.revents & (OsConstants.POLLHUP | OsConstants.POLLERR
                 | OsConstants.POLLNVAL)) != 0;
     }
-
-    /** Linux's POLLRDHUP (the peer shut its writing side); OsConstants lacks it. */
-    private static final int POLLRDHUP = 0x2000;
 
     private static void join(Thread t, long ms) {
         try {
