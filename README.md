@@ -31,7 +31,7 @@ Some features will NOT be implemented:
 - Google Play, F-Droid or other stores distribution
 - Right-to-left input (VT engine issue)
 - Ambiguous-width characters as double width (VT engine issue)
-- Native, [Termux](httos://github.com/termux/termux-app)-like
+- Native, [Termux](https://github.com/termux/termux-app)-like
   Android-compatible userland
 - Android API bridge like [Termux:API](https://github.com/termux/termux-api)
 - On-boot automation like [Termux:Boot](https://github.com/termux/termux-boot)
