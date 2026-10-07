@@ -5,10 +5,10 @@
   "abi": "x86_64",
   "outputs": {
     "libbusybox.so": "9a69307c1e56f50c24c319e2683b99f054b1800b0958b2a4a4d71742dc332808",
-    "libssh.so": "0186dd2ea50e4f0e54eb598e91ea86b291b395e50641525969da1fbb0a8a888c",
+    "libssh.so": "eb1aec78d35be51d4c5c8f6d8f87ab30c00172778cea0db9c7a8754771893eda",
     "libscp.so": "6685bc7f5da37daaea252a4a53ebbae3a4d72e80cb793bd6cc4165cf561d1da0",
     "libsftp.so": "4253eca2982ba58aceb083ebd7bd9f473d17e7158ce9438ceaeac228479d5395",
-    "libssh-keygen.so": "f559c269338dbc009c8c68af8a24d8bfcbb7faf1ae4dc3bae0f85ed26ae9a7dd"
+    "libssh-keygen.so": "814307c4f3b2bec0d9cbf44222b96fa048edbb35e899559a8f6d06d492ae07b9"
   },
   "sources": {
     "busybox": {
@@ -27,7 +27,7 @@
   "inputs": {
     "native/android-tools/sources.lock": "2293c9de2d3b75eed2f839addc74c86c0d2afc20070705052100cf6770c44b5d",
     "native/android-tools/busybox.config": "1e15ec9fb6a9d06623ac2bc707d5facc727894529bdd2c58fec4a001b09614a0",
-    "scripts/build-android-tools.sh": "acee432d19fe7db9832fe2f24c1aa00012a194ccf4f1e5acfe8813bb66be090b",
+    "scripts/build-android-tools.sh": "511f8b1ae698bd67b3e8678f47fd8ef7255f65711eb78594e96679ad51e2ecf7",
     "scripts/fetch-android-tools.sh": "822c183565dc8c5dce6642b6c5c2c2add20a24831cf7ade620c3f0c0b2c398cc",
     "scripts/verify-android-tools.py": "1a36d166a31e7cac562ae2a76003fbd6bcd1e22e3a97ab4214c78667c1af01fc",
     "scripts/bundle-busybox-source.py": "612ef9426f6a913f745a2f46df55c083dfeadf187d7988c29b5b58df2b27e707",
@@ -36,7 +36,7 @@
     "native/android-tools/patches/openssh/0001-android-home-and-bzero.patch": "641f6939adf46fdaac1eafacb5cda58abef03109c6dbc315a9612415c9b4856c",
     "native/android-tools/patches/openssh/0002-android-public-resolver.patch": "c61bfd68124c91b8deddd2c91d77e12281209d7447876309a878c7a18dfda9a7",
     "native/android-tools/patches/openssh/0003-atomic-known-hosts.patch": "486790df69072c23380aa6e80356ae0532fd390e95d6108a34f6ce8a97233a2c",
-    "native/android-tools/patches/openssh/android-known-hosts.h": "1c163429ee1e0831e6fcb23acca1db8cf811c8b435204df400eb364725d2a649",
+    "native/android-tools/patches/openssh/android-known-hosts.h": "76b2bc8622ff08517c8df287bf599f13f3ae10835f254eb0d28cb405423958f9",
     "native/android-tools/patches/openssh/android-passwd.h": "bbfc12e55bc5dfdbcdc707a718207b0bdefb77a6b39c524a340a50efc9bfdd29"
   }
 }

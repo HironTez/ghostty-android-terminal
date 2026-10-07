@@ -136,11 +136,12 @@ android_known_hosts_backup(const char *path, const char *back)
 			}
 		}
 	}
-	if (fsync(out) == -1 || close(out) == -1) {
-		out = -1;
-		goto fail_unlink;
-	}
+	if (fsync(out) == -1)
+		goto fail_unlink;	/* fail closes out */
+	n = close(out);
 	out = -1;
+	if (n == -1)
+		goto fail_unlink;
 	close(in);
 	in = -1;
 	if (rename(tmp, back) == -1)

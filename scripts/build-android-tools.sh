@@ -11,7 +11,7 @@ TOOLS=$ROOT/native/android-tools
 NDK=${ANDROID_NDK:-${ANDROID_NDK_HOME:-$HOME/Android/Sdk/ndk/28.2.13676358}}
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 JOBS=${JOBS:-2}
-case "$JOBS" in 1|2) ;; *) echo 'JOBS must be 1 or 2' >&2; exit 1;; esac
+case "$JOBS" in ''|*[!0-9]*|0) echo 'JOBS must be a positive integer' >&2; exit 1;; esac
 HOSTCC=${HOSTCC:-cc}
 MAKE=${MAKE:-make}
 COMPONENTS=${COMPONENTS:-busybox openssl openssh}
@@ -56,6 +56,10 @@ with tarfile.open(root / 'sources' / src['file']) as archive:
         if len(parts) < 2:
             continue
         member.name = str(pathlib.PurePosixPath(*parts[1:]))
+        if member.islnk():
+            # A hard link names its target by archive path: strip it alike.
+            link = pathlib.PurePosixPath(member.linkname).parts
+            member.linkname = str(pathlib.PurePosixPath(*link[1:])) if len(link) > 1 else ''
         if hasattr(tarfile, 'data_filter'):
             archive.extract(member, target, filter='data')
             continue
@@ -123,7 +127,11 @@ PY
     ); fi
     if has openssl; then (
         cd "$WORK/openssl"
-        perl ./Configure "$SSL_TARGET" -D__ANDROID_API__=29 $FLAGS \
+        # Not $FLAGS: OpenSSL records its compiler flags in the library
+        # (OpenSSL_version(OPENSSL_CFLAGS)), so the prefix maps would carry
+        # this checkout's absolute path into ssh and ssh-keygen. OpenSSL
+        # compiles from relative paths, so it has nothing for them to map.
+        perl ./Configure "$SSL_TARGET" -D__ANDROID_API__=29 -O2 -fPIC \
             no-shared no-module no-tests no-apps no-dso no-engine \
             --prefix=/system --libdir=lib --openssldir=/etc/ssl
         "$MAKE" -j"$JOBS" build_libs
