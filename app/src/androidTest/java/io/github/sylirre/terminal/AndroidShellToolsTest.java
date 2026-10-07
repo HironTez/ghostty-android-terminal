@@ -130,6 +130,30 @@ public class AndroidShellToolsTest {
         run("ssh-keygen -q -t ecdsa -b 256 -N '' -f \"$HOME/.ssh/id_ecdsa\"", 0);
     }
 
+    /**
+     * Two concurrent ssh-keygen -R writers and a reader: the live known_hosts
+     * must always exist and be complete (atomic replace, never renamed away),
+     * and no writer may resurrect a host the other removed (flock serializes
+     * the read-modify-write cycles).
+     */
+    @Test public void knownHostsRewritesAreAtomicAndSerialized() throws Exception {
+        run("cd \"$HOME/.ssh\" && ssh-keygen -q -t ed25519 -N '' -f fixture && pub=$(cat fixture.pub) && "
+                + "{ echo \"keep-host $pub\"; for i in $(seq 1 40); do echo \"host$i $pub\"; done; } >known_hosts", 0);
+        String out = run("cd \"$HOME/.ssh\"; rm -f stop; "
+                + "( while [ ! -e stop ]; do grep -q '^keep-host ' known_hosts || echo READER-MISSING; done ) & r=$!; "
+                + "( for i in $(seq 1 20); do ssh-keygen -R host$i >/dev/null 2>&1 || echo FAIL-A$i; done ) & a=$!; "
+                + "( for i in $(seq 21 40); do ssh-keygen -R host$i >/dev/null 2>&1 || echo FAIL-B$i; done ) & b=$!; "
+                + "wait $a; wait $b; touch stop; wait $r; echo DONE", 0);
+        assertEquals("DONE\n", out);
+        String hosts = read(new File(scratch, ".ssh/known_hosts"));
+        assertTrue(hosts, hosts.startsWith("keep-host "));
+        assertEquals(hosts, 1, hosts.split("\n").length);
+        assertTrue(new File(scratch, ".ssh/known_hosts.old").isFile());
+        String[] leftovers = new File(scratch, ".ssh").list((d, n) -> n.startsWith("known_hosts.")
+                && !n.equals("known_hosts.old") && !n.equals("known_hosts.lock"));
+        assertEquals(java.util.Arrays.toString(leftovers), 0, leftovers.length);
+    }
+
     @Test public void appDataCopiesRemainNonExecutable() throws Exception {
         File copy = new File(scratch, "copied-ssh");
         Files.copy(new File(context.getApplicationInfo().nativeLibraryDir, "libssh.so").toPath(), copy.toPath());
@@ -166,16 +190,33 @@ public class AndroidShellToolsTest {
         Os.symlink("/obsolete-install/libssh.so", ssh.getPath());
         AndroidShellTools.prepare(context);
         assertEquals(context.getApplicationInfo().nativeLibraryDir + "/libssh.so", Os.readlink(ssh.getPath()));
+        // A dropped applet and a crash-leftover pending link are pruned.
+        File dropped = new File(bin, "dropped-applet");
+        File pending = new File(bin, ".scp.0000");
+        Os.symlink("/obsolete-install/libbusybox.so", dropped.getPath());
+        Os.symlink("/obsolete-install/libscp.so", pending.getPath());
+        AndroidShellTools.prepare(context);
+        assertFalse(new File(bin, "dropped-applet").exists() || isLink(dropped));
+        assertFalse(isLink(pending));
         Files.delete(ssh.toPath());
         write(ssh, "user-file");
         try {
+            // A user's regular file is preserved and must not block the shell.
             AndroidShellTools.prepare(context);
-            fail("must not overwrite a regular file");
-        } catch (java.io.IOException expected) {
             assertEquals("user-file", read(ssh));
+            assertTrue(isLink(new File(bin, "scp")));
         } finally {
             Files.delete(ssh.toPath());
             AndroidShellTools.prepare(context);
+        }
+        assertTrue(isLink(ssh));
+    }
+
+    private static boolean isLink(File f) {
+        try {
+            return android.system.OsConstants.S_ISLNK(Os.lstat(f.getPath()).st_mode);
+        } catch (android.system.ErrnoException e) {
+            return false;
         }
     }
 }

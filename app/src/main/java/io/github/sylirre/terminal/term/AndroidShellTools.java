@@ -6,9 +6,13 @@ import android.content.Context;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
+import android.util.Log;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 
 /** Installer-managed Android executables, exposed through private symlinks.
@@ -16,6 +20,8 @@ import java.util.UUID;
  * in nativeLibraryDir, with the installer's executable SELinux label. */
 public final class AndroidShellTools {
     private AndroidShellTools() {}
+
+    private static final String TAG = "AndroidShellTools";
 
     private static final String[] CLIENTS = {"busybox", "ssh", "scp", "sftp", "ssh-keygen"};
     // Must match the curated BusyBox configuration. Deliberately no sh/bash,
@@ -33,7 +39,11 @@ public final class AndroidShellTools {
             "uuencode", "vi", "wc", "whoami", "xargs", "xz", "xzcat", "yes", "zcat"
     };
 
-    /** Prepare all tools or fail visibly: this bundle is not an optional asset. */
+    /**
+     * Prepare all tools or fail visibly: this bundle is not an optional asset.
+     * A user's own regular file at an alias name is left alone (that one
+     * alias is skipped and logged) so it can never block opening a shell.
+     */
     public static synchronized File prepare(Context context) throws IOException {
         File nativeDir = new File(context.getApplicationInfo().nativeLibraryDir);
         for (String client : CLIENTS) {
@@ -56,6 +66,7 @@ public final class AndroidShellTools {
             }
             File busybox = new File(nativeDir, "libbusybox.so");
             for (String applet : APPLETS) alias(bin, applet, busybox);
+            pruneStale(bin);
         } catch (ErrnoException e) {
             throw new IOException("Preparing Android shell tools", e);
         }
@@ -63,12 +74,12 @@ public final class AndroidShellTools {
     }
 
     /** Only managed symlinks can be replaced; never clobber a user's regular file. */
-    private static void alias(File bin, String name, File target)
-            throws IOException, ErrnoException {
+    private static void alias(File bin, String name, File target) throws ErrnoException {
         File link = new File(bin, name);
         try {
             if (!OsConstants.S_ISLNK(Os.lstat(link.getPath()).st_mode)) {
-                throw new IOException("Tool alias conflicts with a non-symlink: " + link);
+                Log.w(TAG, "Not replacing non-symlink " + link + "; alias skipped");
+                return;
             }
             if (Os.readlink(link.getPath()).equals(target.getAbsolutePath())) return;
         } catch (ErrnoException e) {
@@ -82,6 +93,30 @@ public final class AndroidShellTools {
             Os.rename(pending.getPath(), link.getPath());
         } finally {
             pending.delete();
+        }
+    }
+
+    /**
+     * Removes managed symlinks an update no longer provides (an applet dropped
+     * from the curated list) and pending links left by a crash mid-refresh.
+     * Only symlinks that point at one of the bundled executables are touched.
+     */
+    private static void pruneStale(File bin) {
+        Set<String> managed = new HashSet<>(Arrays.asList(CLIENTS));
+        managed.addAll(Arrays.asList(APPLETS));
+        Set<String> targets = new HashSet<>();
+        for (String client : CLIENTS) targets.add("lib" + client + ".so");
+        String[] names = bin.list();
+        if (names == null) return;
+        for (String name : names) {
+            if (managed.contains(name)) continue;
+            String path = new File(bin, name).getPath();
+            try {
+                if (!OsConstants.S_ISLNK(Os.lstat(path).st_mode)) continue;
+                if (targets.contains(new File(Os.readlink(path)).getName())) Os.remove(path);
+            } catch (ErrnoException e) {
+                Log.w(TAG, "Pruning " + path, e);
+            }
         }
     }
 }
