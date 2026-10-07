@@ -794,7 +794,7 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
             return true;
         });
         inputFieldButton = new TextView(this);
-        inputFieldButton.setText("Aa");
+        inputFieldButton.setText(R.string.input_field_button_label);
         inputFieldButton.setTextSize(16);
         inputFieldButton.setGravity(Gravity.CENTER);
         inputFieldButton.setFocusable(true);
@@ -839,11 +839,14 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
     }
 
     private void styleInputFieldButton() {
-        inputFieldButton.setContentDescription(inputFieldOpen
-                ? "Hide terminal input field" : "Show terminal input field");
+        inputFieldButton.setContentDescription(getString(inputFieldOpen
+                ? R.string.input_field_button_hide_description
+                : R.string.input_field_button_show_description));
         inputFieldButton.setSelected(inputFieldOpen);
         if (Build.VERSION.SDK_INT >= 30) {
-            inputFieldButton.setStateDescription(inputFieldOpen ? "Open" : "Closed");
+            inputFieldButton.setStateDescription(getString(inputFieldOpen
+                    ? R.string.input_field_button_state_open
+                    : R.string.input_field_button_state_closed));
         }
         inputFieldButton.setTextColor(inputFieldOpen ? chrome.onAccent : chrome.textSecondary);
         inputFieldButton.setBackground(chrome.ripple(

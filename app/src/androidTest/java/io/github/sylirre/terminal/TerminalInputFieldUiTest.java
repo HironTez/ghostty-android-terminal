@@ -36,6 +36,7 @@ import androidx.lifecycle.Lifecycle;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.After;
 import org.junit.Before;
@@ -87,6 +88,11 @@ public class TerminalInputFieldUiTest {
                 () -> screen().contains("$"), this::screen);
     }
 
+    /** A string as the app under test resolves it. */
+    private static String str(int id) {
+        return InstrumentationRegistry.getInstrumentation().getTargetContext().getString(id);
+    }
+
     @After
     public void cleanup() {
         if (scenario != null) scenario.close();
@@ -101,14 +107,15 @@ public class TerminalInputFieldUiTest {
     }
 
     private void openField() {
-        onView(withContentDescription("Show terminal input field")).perform(click());
-        onView(withContentDescription(TerminalInputFieldView.FIELD_DESCRIPTION))
+        onView(withContentDescription(str(R.string.input_field_button_show_description)))
+                .perform(click());
+        onView(withContentDescription(str(R.string.input_field_description)))
                 .check(matches(isDisplayed()));
     }
 
     private EditText editor(MainActivity activity) {
         return (EditText) described(activity.findViewById(R.id.root),
-                TerminalInputFieldView.FIELD_DESCRIPTION);
+                str(R.string.input_field_description));
     }
 
     private static View described(View root, String description) {
@@ -260,7 +267,8 @@ public class TerminalInputFieldUiTest {
             openField();
             scenario.onActivity(a -> editor(a).setText("touch " + sendMarker.getAbsolutePath()
                     + " && echo sent_$((6*7))_" + id));
-            onView(withContentDescription(TerminalInputFieldView.SEND_DESCRIPTION)).perform(click());
+            onView(withContentDescription(str(R.string.input_field_send_description)))
+                    .perform(click());
             scenario.onActivity(a -> {
                 assertTrue(current(a).userInteracted());
                 assertEquals("", editor(a).getText().toString());
@@ -284,7 +292,8 @@ public class TerminalInputFieldUiTest {
                         + " && echo ran_$((6*7))_" + id, 1);
                 assertTrue(BaseInputConnection.getComposingSpanStart(edit.getText()) >= 0);
             });
-            onView(withContentDescription(TerminalInputFieldView.RUN_DESCRIPTION)).perform(click());
+            onView(withContentDescription(str(R.string.input_field_run_description)))
+                    .perform(click());
             waitFor("explicit Run output", TIMEOUT_MS,
                     () -> runMarker.exists() && outputLine(runOutput), this::screen);
             assertTrue("Run marker removable", runMarker.delete());
@@ -297,7 +306,7 @@ public class TerminalInputFieldUiTest {
                 assertEquals(-1, BaseInputConnection.getComposingSpanStart(editor(a).getText()));
                 // Empty Run must not repeat the previous command or send Enter.
                 assertTrue(described(a.findViewById(R.id.root),
-                        TerminalInputFieldView.RUN_DESCRIPTION).performClick());
+                        str(R.string.input_field_run_description)).performClick());
             });
             assertNeverWithin("empty Run must not re-run the previous command",
                     NOT_EXECUTED_WINDOW_MS, runMarker::exists);
@@ -321,7 +330,7 @@ public class TerminalInputFieldUiTest {
             terminal.setStickyModifiers(modifiers);
             editor(a).setText("x");
         });
-        onView(withContentDescription(TerminalInputFieldView.RUN_DESCRIPTION)).perform(click());
+        onView(withContentDescription(str(R.string.input_field_run_description))).perform(click());
         waitFor("draft is literal x, not Ctrl-X or Ctrl-Enter", TIMEOUT_MS,
                 () -> outputLine("sticky_x"), this::screen);
     }
@@ -336,7 +345,7 @@ public class TerminalInputFieldUiTest {
             editor(a).setText("echo café_$((6*7))\necho $((6*7))_雪");
             assertFalse(current(a).userInteracted());
         });
-        onView(withContentDescription(TerminalInputFieldView.RUN_DESCRIPTION)).perform(click());
+        onView(withContentDescription(str(R.string.input_field_run_description))).perform(click());
         waitFor("both multiline Unicode outputs", TIMEOUT_MS,
                 () -> outputLine("café_42") && outputLine("42_雪"), this::screen);
     }
@@ -366,8 +375,9 @@ public class TerminalInputFieldUiTest {
             editor(a).setText("tab-two-draft");
             editor(a).setSelection(4, 8);
         });
-        onView(withContentDescription("Hide terminal input field")).perform(click());
-        onView(withContentDescription(TerminalInputFieldView.FIELD_DESCRIPTION))
+        onView(withContentDescription(str(R.string.input_field_button_hide_description)))
+                .perform(click());
+        onView(withContentDescription(str(R.string.input_field_description)))
                 .check(matches(not(isDisplayed())));
         openField();
         scenario.recreate();
@@ -409,15 +419,15 @@ public class TerminalInputFieldUiTest {
         openField();
         scenario.onActivity(a -> editor(a).setText("saved-local"));
         onView(withId(R.id.settings_button)).perform(click());
-        onView(withText("Terminal input field")).perform(scrollTo(), click());
+        onView(withText(R.string.setting_input_field_title)).perform(scrollTo(), click());
         pressBack();
-        onView(withContentDescription("Show terminal input field"))
+        onView(withContentDescription(str(R.string.input_field_button_show_description)))
                 .check(matches(not(isDisplayed())));
-        onView(withContentDescription(TerminalInputFieldView.FIELD_DESCRIPTION))
+        onView(withContentDescription(str(R.string.input_field_description)))
                 .check(matches(not(isDisplayed())));
         onView(withId(R.id.extra_keys)).check(matches(isDisplayed()));
         onView(withId(R.id.settings_button)).perform(click());
-        onView(withText("Terminal input field")).perform(scrollTo(), click());
+        onView(withText(R.string.setting_input_field_title)).perform(scrollTo(), click());
         // Let Espresso observe the completed scroll/layout before injecting
         // the tap; this row moves when the draft-dependent setting re-enables.
         onView(withText(R.string.setting_extra_keys_enabled_title)).perform(scrollTo());
@@ -435,7 +445,8 @@ public class TerminalInputFieldUiTest {
         openField();
         scenario.onActivity(a -> editor(a).setText("lowercase-command"));
         onView(withId(R.id.settings_button)).perform(click());
-        onView(withText("Capitalize draft sentences")).perform(scrollTo(), click());
+        onView(withText(R.string.setting_input_field_capitalize_title))
+                .perform(scrollTo(), click());
         pressBack();
         assertTrue(settings.inputFieldAutoCapitalization());
         scenario.onActivity(a -> {
@@ -457,13 +468,13 @@ public class TerminalInputFieldUiTest {
                 submissions.incrementAndGet();
                 return false;
             });
-            described(field, TerminalInputFieldView.SEND_DESCRIPTION).performClick();
-            described(field, TerminalInputFieldView.RUN_DESCRIPTION).performClick();
+            described(field, str(R.string.input_field_send_description)).performClick();
+            described(field, str(R.string.input_field_run_description)).performClick();
             assertEquals("empty Send/Run never call the transfer path", 0, submissions.get());
             EditText edit = editor(a);
             InputConnection ic = edit.onCreateInputConnection(new EditorInfo());
             ic.setComposingText("retain on rejection", 1);
-            described(field, TerminalInputFieldView.RUN_DESCRIPTION).performClick();
+            described(field, str(R.string.input_field_run_description)).performClick();
             assertEquals(1, submissions.get());
             assertEquals("retain on rejection", edit.getText().toString());
             assertTrue("failed transfer preserves composition",
@@ -473,7 +484,7 @@ public class TerminalInputFieldUiTest {
                 assertFalse(enter);
                 return true;
             });
-            described(field, TerminalInputFieldView.SEND_DESCRIPTION).performClick();
+            described(field, str(R.string.input_field_send_description)).performClick();
             assertEquals(2, submissions.get());
             assertNotSame(edit, editor(a));
             ic.commitText("stale correction", 1);
@@ -518,7 +529,8 @@ public class TerminalInputFieldUiTest {
         AtomicReference<InputConnection> connection = new AtomicReference<>();
         scenario.onActivity(a -> connection.set(
                 editor(a).onCreateInputConnection(new EditorInfo())));
-        onView(withContentDescription("Hide terminal input field")).perform(click());
+        onView(withContentDescription(str(R.string.input_field_button_hide_description)))
+                .perform(click());
         scenario.onActivity(a -> {
             assertTrue(a.findViewById(R.id.terminal).hasFocus());
             connection.get().sendKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_X));
@@ -584,7 +596,7 @@ public class TerminalInputFieldUiTest {
             assertFalse(current(a).userInteracted());
             a.onBackPressed();
         });
-        onView(withContentDescription(TerminalInputFieldView.FIELD_DESCRIPTION))
+        onView(withContentDescription(str(R.string.input_field_description)))
                 .check(matches(not(isDisplayed())));
         openField();
         scenario.onActivity(a -> assertEquals("unsubmitted", editor(a).getText().toString()));

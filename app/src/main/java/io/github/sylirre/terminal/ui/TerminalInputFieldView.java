@@ -32,10 +32,6 @@ import io.github.sylirre.terminal.term.TerminalSession;
  * or an Activity's saved-state Bundle (which may contain passwords).
  */
 public final class TerminalInputFieldView extends LinearLayout {
-    public static final String FIELD_DESCRIPTION = "Terminal input draft";
-    public static final String SEND_DESCRIPTION = "Send draft without Enter";
-    public static final String RUN_DESCRIPTION = "Send draft and Enter";
-
     public interface Listener {
         /** Returns false when the target no longer accepts input; keep the draft. */
         boolean onSubmit(TerminalSession target, String text, boolean enter);
@@ -75,8 +71,10 @@ public final class TerminalInputFieldView extends LinearLayout {
         int pad = Chrome.dp(context, R.dimen.space_1);
         setPaddingRelative(pad, pad, pad, pad);
         palette = ChromePalette.from(context, android.graphics.Color.BLACK);
-        send = button("Send", SEND_DESCRIPTION, false);
-        run = button("Run", RUN_DESCRIPTION, true);
+        send = button(R.string.input_field_send_label,
+                R.string.input_field_send_description, false);
+        run = button(R.string.input_field_run_label,
+                R.string.input_field_run_description, true);
         addView(send);
         addView(run);
         bindSession(null);
@@ -140,8 +138,8 @@ public final class TerminalInputFieldView extends LinearLayout {
         };
         field.setId(View.generateViewId());
         field.setSaveEnabled(false);
-        field.setHint("Draft input — Send or Run explicitly");
-        field.setContentDescription(FIELD_DESCRIPTION);
+        field.setHint(R.string.input_field_hint);
+        field.setContentDescription(getContext().getString(R.string.input_field_description));
         field.setTextSize(16);
         field.setMinHeight(Chrome.dp(getContext(), R.dimen.touch_min));
         field.setInputType(inputType());
@@ -217,12 +215,12 @@ public final class TerminalInputFieldView extends LinearLayout {
         restyle();
     }
 
-    private TextView button(String label, String description, boolean enter) {
+    private TextView button(int label, int description, boolean enter) {
         TextView button = new TextView(getContext());
         button.setText(label);
         button.setTextSize(14);
         button.setGravity(Gravity.CENTER);
-        button.setContentDescription(description);
+        button.setContentDescription(getContext().getString(description));
         button.setFocusable(true);
         button.setMinWidth(Chrome.dp(getContext(), R.dimen.touch_min));
         button.setMinHeight(Chrome.dp(getContext(), R.dimen.touch_min));
