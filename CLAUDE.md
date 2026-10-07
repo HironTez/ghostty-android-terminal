@@ -203,7 +203,13 @@ thread → `TerminalView` pulls a fresh `ScreenSnapshot` in `onDraw`.
   sees onboarding), `TerminalInputFieldUiTest` (Espresso, the Aa draft
   field; restores the settings it changes in `@After`),
   `OnboardingActivityTest` (wizard flows that install nothing; skips itself
-  when a rootfs is already installed).
+  when a rootfs is already installed),
+  `ProcFdPermissionsTest` (proc-fd resolver regression; runs by default,
+  installs a fresh Debian-else-Alpine rootfs per method under
+  `files/proc-fd-permissions-tests/`, deleted on pass; opt-in args
+  `procFdDistro`, `procFdNativeDiagnostics`), `PackageManagerTest` (online
+  apk/apt installs; opt-in via `packageManagerDiagnostics=true`, needs
+  network, keeps its rootfs copies).
 - Shell output is asynchronous: poll with `TestUtil.waitFor`, never fixed
   sleeps. Pass the optional diagnostic supplier so timeouts dump the screen.
 - Write escape sequences as `\u001b` string escapes, never raw control
@@ -222,6 +228,6 @@ bundling them; an emulator job (KVM, animations off) runs the full
 instrumented suite and uploads test reports on failure. Zig is not needed in
 CI — the Ghostty prebuilts are committed. The rootfs tarballs are NOT in the
 repo (built fresh per run); the emulator job bundles only the small Alpine
-one, so `UserlandAlpineSessionTest` boots the userland in CI while the
-Debian `UserlandSessionTest` skips there — run that one locally with the
-tarball in `UserlandRootfs/` (docs/testing.md).
+one, so `UserlandAlpineSessionTest` and `ProcFdPermissionsTest` boot the
+userland in CI while the Debian `UserlandSessionTest` skips there — run
+that one locally with the tarball in `UserlandRootfs/` (docs/testing.md).
