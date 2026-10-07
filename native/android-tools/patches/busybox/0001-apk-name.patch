@@ -1,10 +1,35 @@
+BusyBox 1.37.0 local modification for the A-SH Android terminal.
+
+Changed by: Sylirre
+Date of change: 2026-10-04 (modified-file notice added 2026-10-07)
+License: GPL-2.0-only, as part of BusyBox (see BusyBox-LICENSE.txt)
+
+The Android package manager only extracts native code named lib*.so, so the
+BusyBox executable ships as libbusybox.so. This patch lets run_applet_and_exit()
+treat that exact name like "busybox", and adds a prominent modified-file
+notice (GPLv2 section 2(a)) to the changed file.
+
 --- a/libbb/appletlib.c
 +++ b/libbb/appletlib.c
-@@ -977,7 +977,7 @@
+@@ -10,6 +10,12 @@
+  * Permission has been granted to redistribute this code under GPL.
+  *
+  * Licensed under GPLv2 or later, see file LICENSE in this source tree.
++ *
++ * MODIFIED FILE NOTICE (GPLv2 section 2(a)): changed by Sylirre on
++ * 2026-10-04 for the A-SH Android terminal (io.github.sylirre.terminal).
++ * run_applet_and_exit() also dispatches to busybox_main() when the binary
++ * is invoked under its APK packaging name "libbusybox.so".
++ * Not part of upstream BusyBox 1.37.0.
+  */
+ /* We are trying to not use printf, this benefits the case when selected
+  * applets are really simple. Example:
+@@ -977,7 +983,8 @@
  static NORETURN void run_applet_and_exit(const char *name, char **argv)
  {
  #  if ENABLE_BUSYBOX
 -	if (is_prefixed_with(name, "busybox"))
++	/* A-SH Android (2026-10-04): accept the APK packaging name too. */
 +	if (is_prefixed_with(name, "busybox") || strcmp(name, "libbusybox.so") == 0)
  		exit(busybox_main(/*unused:*/ 0, argv));
  #  endif

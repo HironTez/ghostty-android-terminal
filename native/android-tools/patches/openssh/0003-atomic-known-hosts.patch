@@ -1,0 +1,184 @@
+Crash-safe, serialized known_hosts rewrites for Android (no hard links).
+
+Copyright 2026 Sylirre. License: BSD-2-Clause (see Local-patches-LICENSE.txt).
+Date: 2026-10-07. Applies to OpenSSH portable 10.5p1 hostfile.c/ssh-keygen.c
+together with android-known-hosts.h; non-Android builds are unchanged.
+
+Upstream backs up known_hosts with link() and replaces it with one rename(),
+so the live name never disappears. Android app domains cannot hard-link app
+data. The previous local patch used rename(file, file.old) + rename(temp,
+file), leaving a window with no known_hosts at all (crash => host keys lost,
+next connection trusts a new key; readers see ENOENT; a concurrent writer can
+move the other's fresh file away). Now: copy-to-temp + fsync + rename for the
+backup, fsync + one atomic rename for the new file, fsync of the directory,
+and an flock() on "<file>.lock" around every read-modify-write and append.
+
+--- a/hostfile.c
++++ b/hostfile.c
+@@ -55,6 +55,9 @@
+ #include "match.h"
+ #include "sshkey.h"
+ #include "hostfile.h"
++#ifdef __ANDROID__
++#include "android-known-hosts.h"
++#endif
+ #include "log.h"
+ #include "misc.h"
+ #include "pathnames.h"
+@@ -544,12 +547,22 @@
+ {
+ 	FILE *f;
+ 	int success, addnl = 0;
++#ifdef __ANDROID__
++	int lockfd;
++#endif
+ 
+ 	if (key == NULL)
+ 		return 1;	/* XXX ? */
+ 	hostfile_create_user_ssh_dir(filename, 0);
+-	if ((f = fopen(filename, "a+")) == NULL)
+-		return 0;
++#ifdef __ANDROID__
++	/* Serialize with rewrites; e.g. /dev/null has no lockable sibling. */
++	if ((lockfd = android_known_hosts_lock(filename)) == -1)
++		debug_f("lock %s: %s", filename, strerror(errno));
++#endif
++	if ((f = fopen(filename, "a+")) == NULL) {
++		success = 0;
++		goto out;
++	}
+ 	setvbuf(f, NULL, _IONBF, 0);
+ 	/* Make sure we have a terminating newline. */
+ 	if (fseek(f, -1L, SEEK_END) == 0 && fgetc(f) != '\n')
+@@ -558,10 +571,15 @@
+ 		error("Failed to add terminating newline to %s: %s",
+ 		   filename, strerror(errno));
+ 		fclose(f);
+-		return 0;
++		success = 0;
++		goto out;
+ 	}
+ 	success = write_host_entry(f, host, NULL, key, store_hash);
+ 	fclose(f);
++ out:
++#ifdef __ANDROID__
++	android_known_hosts_unlock(lockfd);
++#endif
+ 	return success;
+ }
+ 
+@@ -625,6 +643,9 @@
+ {
+ 	int r, fd, oerrno = 0;
+ 	int loglevel = quiet ? SYSLOG_LEVEL_DEBUG1 : SYSLOG_LEVEL_VERBOSE;
++#ifdef __ANDROID__
++	int lockfd = -1;
++#endif
+ 	struct host_delete_ctx ctx;
+ 	char *fp = NULL, *temp = NULL, *back = NULL;
+ 	const char *what;
+@@ -654,6 +675,15 @@
+ 		goto fail;
+ 	}
+ 
++#ifdef __ANDROID__
++	/* Hold the lock across read-modify-write so no update is lost. */
++	if ((lockfd = android_known_hosts_lock(filename)) == -1) {
++		oerrno = errno;
++		error_f("lock %s: %s", filename, strerror(oerrno));
++		r = SSH_ERR_SYSTEM_ERROR;
++		goto fail;
++	}
++#endif
+ 	if ((fd = mkstemp(temp)) == -1) {
+ 		oerrno = errno;
+ 		error_f("mkstemp: %s", strerror(oerrno));
+@@ -723,6 +753,20 @@
+ 
+ 	if (ctx.modified) {
+ 		/* Backup the original file and replace it with the temporary */
++#ifdef __ANDROID__
++		/*
++		 * No hard links in Android app data. Back up by durable copy
++		 * so the live file is never renamed away, then fsync + rename.
++		 */
++		if (android_known_hosts_backup(filename, back) == -1) {
++			oerrno = errno;
++			error_f("backup %.100s to %.100s: %s", filename,
++			    back, strerror(errno));
++			r = SSH_ERR_SYSTEM_ERROR;
++			goto fail;
++		}
++		if (android_known_hosts_commit(temp, filename) == -1) {
++#else
+ 		if (unlink(back) == -1 && errno != ENOENT) {
+ 			oerrno = errno;
+ 			error_f("unlink %.100s: %s", back, strerror(errno));
+@@ -737,6 +781,7 @@
+ 			goto fail;
+ 		}
+ 		if (rename(temp, filename) == -1) {
++#endif
+ 			oerrno = errno;
+ 			error_f("rename \"%s\" to \"%s\": %s", temp,
+ 			    filename, strerror(errno));
+@@ -759,6 +804,9 @@
+ 	free(fp);
+ 	if (ctx.out != NULL)
+ 		fclose(ctx.out);
++#ifdef __ANDROID__
++	android_known_hosts_unlock(lockfd);
++#endif
+ 	free(ctx.match_keys);
+ 	umask(omask);
+ 	if (r == SSH_ERR_SYSTEM_ERROR)
+--- a/ssh-keygen.c
++++ b/ssh-keygen.c
+@@ -49,6 +49,9 @@
+ #include "misc.h"
+ #include "match.h"
+ #include "hostfile.h"
++#ifdef __ANDROID__
++#include "android-known-hosts.h"
++#endif
+ #include "dns.h"
+ #include "ssh.h"
+ #include "ssh2.h"
+@@ -1280,6 +1283,11 @@
+ 		    strlcat(old, ".old", sizeof(old)) >= sizeof(old))
+ 			fatal("known_hosts path too long");
+ 		umask(077);
++#ifdef __ANDROID__
++		/* Held until exit: serializes the whole read-modify-write. */
++		if (android_known_hosts_lock(identity_file) == -1)
++			fatal("lock %s: %s", identity_file, strerror(errno));
++#endif
+ 		if ((fd = mkstemp(tmp)) == -1)
+ 			fatal("mkstemp: %s", strerror(errno));
+ 		if ((ctx.out = fdopen(fd, "w")) == NULL) {
+@@ -1318,6 +1326,17 @@
+ 			unlink(tmp);
+ 	} else if (inplace) {
+ 		/* Backup existing file */
++#ifdef __ANDROID__
++		/* No hard links in app data: durable copy, never a rename. */
++		if (android_known_hosts_backup(identity_file, old) == -1) {
++			oerrno = errno;
++			unlink(tmp);
++			fatal("backup %.100s to %.100s: %s", identity_file, old,
++			    strerror(oerrno));
++		}
++		/* Move new one into place (fsync, rename, fsync dir) */
++		if (android_known_hosts_commit(tmp, identity_file) == -1) {
++#else
+ 		if (unlink(old) == -1 && errno != ENOENT)
+ 			fatal("unlink %.100s: %s", old, strerror(errno));
+ 		if (link(identity_file, old) == -1)
+@@ -1325,6 +1344,7 @@
+ 			    strerror(errno));
+ 		/* Move new one into place */
+ 		if (rename(tmp, identity_file) == -1) {
++#endif
+ 			error("rename\"%s\" to \"%s\": %s", tmp, identity_file,
+ 			    strerror(errno));
+ 			unlink(tmp);

@@ -83,42 +83,79 @@ if (vmImages.isDirectory()) {
 }
 
 // Shell tools are mandatory prebuilts, unlike optional rootfs/VM assets.
-// Fail before packaging rather than shipping a native-shell feature that breaks.
+// Fail before packaging rather than shipping a native-shell feature that
+// breaks, a binary from an unknown toolchain, or one whose recorded build
+// inputs (patches, scripts, configs, pinned source hashes) have since changed
+// without a rebuild. The ELF hardening checks themselves live in
+// scripts/verify-android-tools.py, which recorded these manifests.
 def verifyAndroidShellTools = tasks.register("verifyAndroidShellTools") {
+    def toolsDir = rootProject.file("native/android-tools")
+    def repoRoot = rootProject.projectDir
+    def pinnedNdk = android.ndkVersion
+    def pinnedApi = android.defaultConfig.minSdk
     doLast {
+        def json = { file -> new groovy.json.JsonSlurper().parse(file) }
+        def sha256 = { file -> java.security.MessageDigest.getInstance("SHA-256")
+                .digest(file.bytes).encodeHex().toString() }
+        def fail = { msg -> throw new GradleException(msg) }
+        def lock = json(new File(toolsDir, "sources.lock"))
         ["arm64-v8a", "x86_64"].each { abi ->
-            def dir = rootProject.file("native/android-tools/prebuilt/${abi}")
+            def dir = new File(toolsDir, "prebuilt/${abi}")
             def manifestFile = new File(dir, "build.json")
             if (!manifestFile.isFile()) {
-                throw new GradleException("Missing Android tool manifest: ${manifestFile}; run scripts/build-android-tools.sh")
+                fail("Missing Android tool manifest: ${manifestFile}; run scripts/build-android-tools.sh")
             }
-            def manifest = new groovy.json.JsonSlurper().parse(manifestFile)
+            def manifest = json(manifestFile)
+            // Refuse manifests this build does not understand instead of
+            // guessing what a newer schema's fields mean.
+            if (manifest.schema != 1) fail("Unknown Android tool manifest schema ${manifest.schema} in ${manifestFile}")
+            if (manifest.ndk != pinnedNdk || manifest.api != pinnedApi || manifest.abi != abi) {
+                fail("${manifestFile} was built for NDK ${manifest.ndk}/API ${manifest.api}/${manifest.abi}, "
+                        + "expected ${pinnedNdk}/${pinnedApi}/${abi}")
+            }
             ["busybox", "ssh", "scp", "sftp", "ssh-keygen"].each { cmd ->
                 def executable = new File(dir, "lib${cmd}.so")
                 if (!executable.isFile()) {
-                    throw new GradleException("Missing Android tool: ${executable}; run scripts/build-android-tools.sh")
+                    fail("Missing Android tool: ${executable}; run scripts/build-android-tools.sh")
                 }
-                def actual = java.security.MessageDigest.getInstance("SHA-256")
-                        .digest(executable.bytes).encodeHex().toString()
-                if (manifest.outputs[executable.name] != actual) {
-                    throw new GradleException("Android tool checksum mismatch: ${executable}")
+                if (manifest.outputs[executable.name] != sha256(executable)) {
+                    fail("Android tool checksum mismatch: ${executable}")
+                }
+            }
+            if (manifest.outputs.size() != 5) fail("Unexpected outputs in ${manifestFile}")
+            if (manifest.sources.keySet() != lock.keySet()) fail("${manifestFile} sources differ from sources.lock")
+            lock.each { component, src ->
+                if (manifest.sources[component].sha256 != src.sha256
+                        || manifest.sources[component].version != src.version) {
+                    fail("${abi} tools were built from a different ${component} than sources.lock pins; rebuild")
+                }
+            }
+            manifest.inputs.each { path, expected ->
+                def input = new File(repoRoot, path)
+                if (!input.isFile() || sha256(input) != expected) {
+                    fail("Android tool build input changed since ${abi} was built: ${path}; "
+                            + "run scripts/build-android-tools.sh")
                 }
             }
         }
-        def sourceArchive = rootProject.file("native/android-tools/licenses/busybox-corresponding-source.tar.xz")
-        def sourceManifest = rootProject.file("native/android-tools/licenses/busybox-source.json")
+        def sourceArchive = new File(toolsDir, "licenses/busybox-corresponding-source.tar.xz")
+        def sourceManifest = new File(toolsDir, "licenses/busybox-source.json")
         if (!sourceArchive.isFile() || !sourceManifest.isFile()) {
-            throw new GradleException("Missing BusyBox corresponding source; run scripts/bundle-busybox-source.py")
+            fail("Missing BusyBox corresponding source; run scripts/bundle-busybox-source.py")
         }
-        def source = new groovy.json.JsonSlurper().parse(sourceManifest)
-        def sha256 = { file -> java.security.MessageDigest.getInstance("SHA-256")
-                .digest(file.bytes).encodeHex().toString() }
+        def source = json(sourceManifest)
+        if (source.schema != 1) fail("Unknown BusyBox source manifest schema ${source.schema}")
         if (sha256(sourceArchive) != source.archive) {
-            throw new GradleException("BusyBox source archive checksum mismatch")
+            fail("BusyBox source archive checksum mismatch")
+        }
+        ["scripts/android-tools-notices.py", "scripts/build-android-tools.sh",
+         "native/android-tools/patches/busybox/0001-apk-name.patch"].each { required ->
+            if (!source.inputs.containsKey(required)) fail("BusyBox corresponding source lacks ${required}")
         }
         source.inputs.each { path, expected ->
-            if (sha256(rootProject.file(path)) != expected) {
-                throw new GradleException("Stale BusyBox corresponding source: ${path}; run scripts/bundle-busybox-source.py")
+            def input = new File(repoRoot, path)
+            if (!input.isFile() || sha256(input) != expected) {
+                fail("Stale BusyBox corresponding source: ${path}; run scripts/bundle-busybox-source.py")
             }
         }
     }

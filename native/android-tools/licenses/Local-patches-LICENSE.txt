@@ -1,8 +1,10 @@
-BusyBox APK-dispatch patch:
+BusyBox APK-dispatch patch (patches/busybox/0001-apk-name.patch; it also
+adds a modified-file notice with the date of change to libbb/appletlib.c):
 Copyright 2026 Sylirre
 License: GPL-2.0-only, as part of BusyBox. See BusyBox-LICENSE.txt.
 
-OpenSSH Android client compatibility header and patches:
+OpenSSH Android client compatibility headers and patches
+(patches/openssh/*.patch, android-passwd.h, android-known-hosts.h):
 Copyright 2026 Sylirre
 License: BSD-2-Clause
 
@@ -30,7 +32,10 @@ The patches are local changes against pinned upstream releases, not copies
 of Termux patches. Android passwd behavior and known-hosts hard-link
 limitations were researched with Termux as portability reference:
 https://github.com/termux/termux-packages/tree/master/packages/openssh
-The backup patch additionally restores the original if the final rename fails.
+The known_hosts change (0003-atomic-known-hosts.patch, android-known-hosts.h)
+is independent: it backs up by durable copy instead of hard link or rename,
+replaces the file with one fsync'd atomic rename, and serializes writers with
+flock().
 
 Build/fetch/verification scripts and Java integration:
 Copyright 2026 Sylirre
