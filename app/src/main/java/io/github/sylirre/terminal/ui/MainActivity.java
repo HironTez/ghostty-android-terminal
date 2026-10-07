@@ -134,6 +134,9 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
      * API, or reaped after exiting with no listener. Adopts new ones as tabs
      * and moves off a current session that is gone.
      */
+    /** The sessions the tab strip currently shows, in order (see {@link #tabAt}). */
+    private List<TerminalSession> tabSessions = new ArrayList<>();
+
     private final Runnable onSessionsChanged = () -> {
         if (isFinishing() || isDestroyed()) return;
         for (TerminalSession s : sessions.sessions()) {
@@ -271,12 +274,14 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         tabs.setListener(new TabStripView.Listener() {
             @Override
             public void onTabSelected(int index) {
-                switchTo(sessions.sessions().get(index));
+                TerminalSession s = tabAt(index);
+                if (s != null) switchTo(s);
             }
 
             @Override
             public void onTabClosed(int index) {
-                confirmCloseTab(sessions.sessions().get(index));
+                TerminalSession s = tabAt(index);
+                if (s != null) confirmCloseTab(s);
             }
 
             @Override
@@ -810,15 +815,26 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
 
     private void setInputFieldOpen(boolean open) {
         boolean closing = inputFieldOpen && !open;
+        boolean opening = !inputFieldOpen && open;
         inputFieldOpen = open;
         inputField.saveSelection();
         inputField.setVisibility(open ? View.VISIBLE : View.GONE);
         styleInputFieldButton();
         backGesture.setEnabled(open || searchBar.isOpen());
-        if (open && !searchBar.isOpen() && current != null) inputField.focusEditor();
+        // Only an actual open takes focus: onResume re-applies the settings
+        // through here, and must neither pull focus back from the terminal nor
+        // raise the keyboard against the Touch keyboard setting.
+        if (opening && !searchBar.isOpen() && current != null) inputField.focusEditor();
         else if (closing && !searchBar.isOpen()) {
             terminal.requestFocus();
-            if (settings.touchKeyboard()) showKeyboard();
+            if (settings.touchKeyboard()) {
+                showKeyboard();
+            } else {
+                // The draft's keyboard would otherwise stay up, now typing
+                // straight into the PTY.
+                InputMethodManager imm = getSystemService(InputMethodManager.class);
+                if (imm != null) imm.hideSoftInputFromWindow(terminal.getWindowToken(), 0);
+            }
         }
     }
 
@@ -1367,10 +1383,24 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         return s.isVm() ? s.label() : s.label() + ":" + (index + 1);
     }
 
+    /**
+     * The session drawn at tab {@code index} by the last {@link #updateTabs},
+     * or null if it has gone since. The headless API adds and closes sessions
+     * off the main thread and the strip hears of it only through a posted
+     * refresh, so resolving a tap against the live list could hit the wrong
+     * session — or run past its end.
+     */
+    private TerminalSession tabAt(int index) {
+        if (index < 0 || index >= tabSessions.size()) return null;
+        TerminalSession s = tabSessions.get(index);
+        return sessions.indexOf(s) >= 0 ? s : null;
+    }
+
     private void updateTabs() {
         List<String> titles = new ArrayList<>();
         List<TabStripView.TabProgress> progress = new ArrayList<>();
         List<TerminalSession> all = sessions.sessions();
+        tabSessions = all;
         TerminalInputFieldView.retainSessions(all);
         boolean showProgress = settings.showProgress();
         for (int i = 0; i < all.size(); i++) {
