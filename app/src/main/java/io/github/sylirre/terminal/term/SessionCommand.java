@@ -3,6 +3,10 @@
 
 package io.github.sylirre.terminal.term;
 
+import android.content.Context;
+
+import java.util.LinkedHashMap;
+
 /**
  * What a {@link TerminalSession} spawns: either a command to execve() or an
  * arm64chroot argv to run in-process ({@link TerminalNative#ptyCreateEmulator}).
@@ -31,14 +35,25 @@ public final class SessionCommand {
     }
 
     /**
-     * /system/bin/sh with PATH=/system/bin.
-     *
-     * @param homeDir HOME and initial working directory (app files dir —
-     *                the only generally writable place).
-     * @param tmpDir  TMPDIR (app cache dir).
+     * /system/bin/sh with PATH=/system/bin. HOME and the initial working
+     * directory are the app files dir (the only generally writable place);
+     * TMPDIR is the cache dir.
      */
-    public static SessionCommand androidShell(String homeDir, String tmpDir) {
-        String[] env = {
+    public static SessionCommand androidShell(Context context) {
+        return androidShell(context, new String[0], new String[0], null);
+    }
+
+    /**
+     * /system/bin/sh with {@code shArgs} after argv[0] (e.g. {@code -c script}),
+     * {@code extraEnv} ({@code NAME=value}) appended to the default environment,
+     * started in {@code cwd} (null: the files directory). The headless API's
+     * Android-shell spawn and exec.
+     */
+    public static SessionCommand androidShell(Context context,
+            String[] shArgs, String[] extraEnv, String cwd) {
+        String homeDir = context.getFilesDir().getAbsolutePath();
+        String tmpDir = context.getCacheDir().getAbsolutePath();
+        String[] base = {
                 "PATH=/system/bin",
                 "HOME=" + homeDir,
                 "TMPDIR=" + tmpDir,
@@ -47,8 +62,19 @@ public final class SessionCommand {
                 "ANDROID_ROOT=/system",
                 "ANDROID_DATA=/data",
         };
-        return new SessionCommand("/system/bin/sh", new String[] {"sh"}, env,
-                homeDir, labelForShell("/system/bin/sh"), false);
+        // A caller's NAME=value replaces the default of the same name.
+        LinkedHashMap<String, String> merged = new LinkedHashMap<>();
+        for (String kv : base) merged.put(kv.substring(0, kv.indexOf('=')), kv);
+        for (String kv : extraEnv) {
+            int eq = kv.indexOf('=');
+            if (eq > 0) merged.put(kv.substring(0, eq), kv);
+        }
+        String[] env = merged.values().toArray(new String[0]);
+        String[] argv = new String[1 + shArgs.length];
+        argv[0] = "sh";
+        System.arraycopy(shArgs, 0, argv, 1, shArgs.length);
+        return new SessionCommand("/system/bin/sh", argv, env,
+                cwd != null ? cwd : homeDir, labelForShell("/system/bin/sh"), false);
     }
 
     /**

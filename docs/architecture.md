@@ -196,8 +196,12 @@ into the guest when it lies inside the rootfs, else `/`).
 | `UserlandDistro` | Maps bundled rootfs asset names (`<id>_<version>_aarch64_rootfs.tar.xz`) to choosable distributions |
 | `UserlandRootfs` | Rootfs asset detection + tar.xz install + atomic publish + arm64chroot command construction |
 | `RootfsBackup` | Streams the rootfs to/from a gzip-tar file (Settings backup/restore), reusing `UserlandRootfs`'s tar reader/publish |
-| `TerminalSession` | PTY fd + shell pid + reader thread; writes input; reports exit |
-| `SessionManager` | Process-wide session list; survives Activity recreation |
+| `TerminalSession` | PTY fd + shell pid + reader thread; writes input; reports exit; primary + extra listeners; one optional output tap (headless attach) |
+| `SessionManager` | Process-wide session list; survives Activity recreation; reaps sessions that exit with no Activity listening; change notifications for the tab strip |
+| `SessionService` | Foreground service (specialUse) keeping the process alive; notification, wake lock; exported (DUMP-guarded) entry point of headless mode |
+| `ProcessPipes` | A command on three pipes (no PTY, no emulator) for headless `exec` |
+| `HeadlessServer` / `HeadlessConnection` / `Frames` | `headless/`: the ADB control API — abstract socket, peer-uid check, JSON request + framed streams ([headless-api.md](headless-api.md)) |
+| `UserlandSetup` | Distro install + persisted outcome, and settings → `UserlandOptions`; shared by onboarding, the main screen and the headless API |
 | `VmOptions` | What to boot under arm64emu: firmware, image, RAM, terminal count, JIT |
 | `VmMachine` | The running guest machine (process singleton): its channels, control channel, diagnostics pump; tabs attach to its terminals |
 | `TerminalView` | Canvas grid renderer, IME connection, scroll + pinch-zoom gestures |
@@ -554,9 +558,46 @@ Call sites: `ExtraKeysView`, `TabStripView`, `SearchBarView`, `MainActivity`
 ### Sessions and tabs
 
 `SessionManager` is a process singleton, so rotation/recreation keeps shells
-alive. Sessions end when the process is killed (no foreground service —
-a deliberate scope cut, documented in the README). Closing the last tab
-finishes the activity.
+alive, and `SessionService` (a `specialUse` foreground service with
+`stopWithTask=false`) keeps the process at foreground priority while
+sessions run. Sessions still end if the process is killed. Closing the last
+tab finishes the activity and stops the service, except in headless mode,
+where the service stays up for the remote API.
+
+Sessions do not need an Activity. `TerminalSession` has one primary
+listener (the Activity, replaced on every recreation and cleared in
+`onDestroy`) plus extra listeners that survive it. `SessionManager` adds a
+reaper to every session it creates: a session that exits while no primary
+listener is set (a headless session, or the UI was swiped away) is removed
+from the list, and the service's notification is updated or the service is
+stopped. With an Activity listening, its own `onExited` (startup-failure
+fallbacks, tab switching) runs as before. `SessionManager` change
+notifications let `MainActivity` adopt sessions created behind its back as
+tabs and move off a current session that is gone.
+
+**Headless ADB API** ([headless-api.md](headless-api.md)). `SessionService`
+is exported, guarded by `android.permission.DUMP` (held by the adb shell),
+and `ACTION ...headless.START` runs `HeadlessServer`: an abstract
+`LocalServerSocket` reached with `adb forward`, where every peer is checked
+with `SO_PEERCRED` before anything is read (uid 0, 2000, or this very
+process — not the app uid at large, which the userland's guest processes
+share). Since an abstract name can be squatted while the server is down, each
+start draws a random key that only DUMP holders can read (the service's
+`dump()`), and the server answers a client's `hello` nonce with an HMAC under
+it, which `gterm` checks before sending anything. A connection carries one
+JSON request (after an optional `hello`) and then frames. A client attaches to a session as
+its `TerminalSession.OutputTap`, a raw-byte mirror fed by the reader thread
+before the emulator sees the bytes. While a tap is attached the emulator's
+query replies are not written back, because the remote terminal answers them,
+and UI resizes are deferred until detach, because the remote terminal owns
+the size. The in-app emulator keeps being fed either way, so the UI shows the
+same screen.
+`exec` uses `ProcessPipes` / `TerminalNative.pipeCreate` (the PTY spawn's
+fork path on three pipes, with an exact guest argv built by
+`UserlandRootfs.command(context, UserlandSetup.options(...).withCommand(guest,
+cwd, env))`), so it has separate stdout/stderr and a real exit code. Children of both spawn flavors close every inherited descriptor above
+stderr first: the in-process engines never exec, so `O_CLOEXEC` alone would
+leave them holding other sessions' PTY masters and other execs' stdin pipes.
 
 When a userland rootfs is installed, new tabs default to userland (and to an
 Android `/system/bin/sh` tab when it isn't). Long-pressing `+` no longer

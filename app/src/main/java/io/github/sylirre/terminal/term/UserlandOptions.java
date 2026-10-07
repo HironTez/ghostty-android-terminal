@@ -44,10 +44,29 @@ public final class UserlandOptions {
      * do not apply to it.
      */
     public final boolean chrootNg;
+    /**
+     * Exact guest argv to run instead of the login shell (headless spawn/exec),
+     * or null for the login shell. Passed through untokenized, so quoting
+     * survives; argv[0] is resolved by the engine against the working
+     * directory, not {@code PATH}, so callers pass a guest-absolute path.
+     */
+    public final String[] command;
+    /** Extra guest environment as {@code NAME=value}, applied last (may be empty). */
+    public final String[] extraEnv;
 
     public UserlandOptions(String loginShell, boolean bindExternalStorage,
             String identity, String home, String workDir, String locale,
             String path, boolean jit, int jitBufferMb, boolean chrootNg) {
+        this(loginShell, bindExternalStorage, identity, home, workDir, locale,
+                path, jit, jitBufferMb, chrootNg, null, new String[0]);
+    }
+
+    private UserlandOptions(String loginShell, boolean bindExternalStorage,
+            String identity, String home, String workDir, String locale,
+            String path, boolean jit, int jitBufferMb, boolean chrootNg,
+            String[] command, String[] extraEnv) {
+        this.command = command;
+        this.extraEnv = extraEnv;
         this.loginShell = loginShell;
         this.bindExternalStorage = bindExternalStorage;
         this.identity = identity;
@@ -58,6 +77,19 @@ public final class UserlandOptions {
         this.jit = jit;
         this.jitBufferMb = jitBufferMb;
         this.chrootNg = chrootNg;
+    }
+
+    /**
+     * A copy that runs {@code command} (exact guest argv) instead of the login
+     * shell, in {@code workDir} when non-null (else this copy's setting), with
+     * {@code extraEnv} ({@code NAME=value}) added to the guest environment.
+     */
+    public UserlandOptions withCommand(String[] command, String workDir,
+            String[] extraEnv) {
+        return new UserlandOptions(loginShell, bindExternalStorage, identity, home,
+                workDir != null ? workDir : this.workDir, locale, path, jit,
+                jitBufferMb, chrootNg, command,
+                extraEnv != null ? extraEnv : new String[0]);
     }
 
     /**

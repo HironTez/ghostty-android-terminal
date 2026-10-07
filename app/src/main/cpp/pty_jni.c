@@ -15,6 +15,9 @@
  * (guest execve is an in-process reload in both), so there is no loader and
  * nothing to exec (see native/arm64chroot, native/chroot-ng).
  */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE /* pipe2 */
+#endif
 #include <android/api-level.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -83,7 +86,8 @@ static void free_cstr_array(char **a) {
  * Closes every descriptor above stderr in a fork()ed child. The app's own
  * descriptors are O_CLOEXEC, but the in-process engines never exec, so nothing
  * would drop them: a child would otherwise keep, for its whole life, copies of
- * other sessions' PTY masters.
+ * other sessions' PTY masters and — worse — the write ends of a concurrent
+ * pipe spawn's stdin, whose reader then never sees EOF.
  */
 static int g_close_range_ok = -1;
 
@@ -114,8 +118,8 @@ static void close_fds_from(int low) {
 static void close_inherited_fds(void) { close_fds_from(3); }
 
 /*
- * The fork()ed child's common tail: stdio is already in place. Never
- * returns.
+ * The fork()ed child's common tail for both spawn flavors (PTY and pipes):
+ * stdio is already in place. Never returns.
  */
 __attribute__((noreturn))
 static void enter_child(const char *cmd, char **argv, char **envp,
@@ -392,6 +396,77 @@ Java_io_github_sylirre_terminal_term_TerminalNative_ptyCreateEmulator(
     (void)clazz;
     return spawn_on_pty(env, NULL, jargs, jenv, jcwd, cols, rows, cell_w, cell_h,
                         jpid);
+}
+
+/*
+ * Forks a child on three pipes instead of a PTY — the headless API's exec,
+ * which needs stdout and stderr apart and a real EOF on stdin. Same two
+ * flavors as spawn_on_pty (execve when cmd is non-NULL, else the in-process
+ * userland engine). The child gets its own session (setsid) with no
+ * controlling terminal, so the caller can signal the whole process group
+ * through -pid.
+ *
+ * fds_out receives [0] the write end of the child's stdin, [1] the read end of
+ * its stdout, [2] the read end of its stderr. The caller owns all three.
+ */
+static jint spawn_on_pipes(JNIEnv *env, jstring jcmd, jobjectArray jargs,
+                           jobjectArray jenv, jstring jcwd, jintArray jfds,
+                           jintArray jpid) {
+    int in[2] = {-1, -1}, out[2] = {-1, -1}, err[2] = {-1, -1};
+    if (pipe2(in, O_CLOEXEC) != 0 || pipe2(out, O_CLOEXEC) != 0 ||
+        pipe2(err, O_CLOEXEC) != 0) {
+        int e = errno;
+        int all[6] = {in[0], in[1], out[0], out[1], err[0], err[1]};
+        for (int i = 0; i < 6; i++) if (all[i] >= 0) close(all[i]);
+        errno = e;
+        return throw_errno(env, "pipe");
+    }
+
+    const char *cmd = jcmd ? (*env)->GetStringUTFChars(env, jcmd, NULL) : NULL;
+    const char *cwd = jcwd ? (*env)->GetStringUTFChars(env, jcwd, NULL) : NULL;
+    char **argv = to_cstr_array(env, jargs);
+    char **envp = to_cstr_array(env, jenv);
+
+    prepare_close_fds();
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        /* dup2 clears FD_CLOEXEC on the copies, so stdio survives an execve. */
+        dup2(in[0], STDIN_FILENO);
+        dup2(out[1], STDOUT_FILENO);
+        dup2(err[1], STDERR_FILENO);
+        enter_child(cmd, argv, envp, cwd); /* closes the pipe originals */
+    }
+
+    int fork_errno = errno;
+    close(in[0]);
+    close(out[1]);
+    close(err[1]);
+    free_cstr_array(argv);
+    free_cstr_array(envp);
+    if (cmd) (*env)->ReleaseStringUTFChars(env, jcmd, cmd);
+    if (cwd) (*env)->ReleaseStringUTFChars(env, jcwd, cwd);
+    if (pid < 0) {
+        close(in[1]);
+        close(out[0]);
+        close(err[0]);
+        errno = fork_errno;
+        return throw_errno(env, "fork");
+    }
+
+    jint fds_out[3] = {in[1], out[0], err[0]};
+    (*env)->SetIntArrayRegion(env, jfds, 0, 3, fds_out);
+    jint pid_out = (jint)pid;
+    (*env)->SetIntArrayRegion(env, jpid, 0, 1, &pid_out);
+    return 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_sylirre_terminal_term_TerminalNative_pipeCreate(
+    JNIEnv *env, jclass clazz, jstring jcmd, jobjectArray jargs,
+    jobjectArray jenv, jstring jcwd, jintArray jfds, jintArray jpid) {
+    (void)clazz;
+    return spawn_on_pipes(env, jcmd, jargs, jenv, jcwd, jfds, jpid);
 }
 
 JNIEXPORT void JNICALL

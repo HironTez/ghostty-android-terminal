@@ -129,6 +129,37 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
     private String appliedBackgroundPath;
     private int appliedBackgroundBlur = -1;
 
+    /** The sessions the tab strip currently shows, in order (see {@link #tabAt}). */
+    private List<TerminalSession> tabSessions = new ArrayList<>();
+
+    /**
+     * Sessions added or removed behind this Activity's back — by the headless
+     * API, or reaped after exiting with no listener. Adopts new ones as tabs
+     * and moves off a current session that is gone.
+     */
+    private final Runnable onSessionsChanged = () -> {
+        if (isFinishing() || isDestroyed()) return;
+        for (TerminalSession s : sessions.sessions()) {
+            if (!s.hasListener()) s.setListener(this);
+        }
+        if (current != null && sessions.indexOf(current) < 0) {
+            List<TerminalSession> remaining = sessions.sessions();
+            TerminalInputFieldView.retainSessions(remaining);
+            if (remaining.isEmpty()) {
+                SessionService.stop(this);
+                finishAndRemoveTask();
+            } else {
+                switchTo(remaining.get(0));
+            }
+            return;
+        }
+        if (current == null && !sessions.isEmpty() && !awaitingOnboarding) {
+            switchTo(sessions.sessions().get(0));
+            return;
+        }
+        updateTabs();
+    };
+
     /** Run by {@link SessionService} when the user taps "Exit" in the notification. */
     private final Runnable onServiceExit = () -> {
         // Sessions are already torn down by the service; just drop the UI.
@@ -243,12 +274,14 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         tabs.setListener(new TabStripView.Listener() {
             @Override
             public void onTabSelected(int index) {
-                switchTo(sessions.sessions().get(index));
+                TerminalSession s = tabAt(index);
+                if (s != null) switchTo(s);
             }
 
             @Override
             public void onTabClosed(int index) {
-                confirmCloseTab(sessions.sessions().get(index));
+                TerminalSession s = tabAt(index);
+                if (s != null) confirmCloseTab(s);
             }
 
             @Override
@@ -291,6 +324,7 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         }
 
         SessionService.setExitListener(onServiceExit);
+        sessions.addChangeListener(onSessionsChanged);
         // Deferred while onboarding runs — the system dialog must not land on
         // top of the wizard's first impression; re-requested when it returns.
         if (!awaitingOnboarding) maybeRequestNotificationsPermission();
@@ -365,6 +399,11 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
     protected void onDestroy() {
         super.onDestroy();
         SessionService.clearExitListener(onServiceExit);
+        sessions.removeChangeListener(onSessionsChanged);
+        // Sessions outlive this Activity. Stop routing their callbacks here, so
+        // one that exits later is reaped by SessionManager (which also updates
+        // or stops the service) rather than by a destroyed Activity's tab code.
+        for (TerminalSession s : sessions.sessions()) s.clearListener(this);
         inputField.release();
         if (bellTone != null) {
             bellTone.release(); // frees the native audio track it holds
@@ -511,13 +550,7 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
 
     private void createSession(boolean userland) {
         try {
-            UserlandOptions userlandOptions = new UserlandOptions(
-                    settings.userlandLoginShell(), storageBindingEnabledForNewSession(),
-                    settings.userlandIdentity(), settings.userlandHome(),
-                    settings.userlandWorkDir(), settings.userlandLocale(),
-                    settings.userlandPath(),
-                    settings.userlandJitEnabled(), settings.userlandJitBufferMb(),
-                    settings.userlandChrootNgEnabled());
+            UserlandOptions userlandOptions = UserlandSetup.options(this, settings);
             TerminalSession s = sessions.create(this,
                     terminal.gridCols(), terminal.gridRows(),
                     terminal.cellWidthPx(), terminal.cellHeightPx(),
@@ -979,13 +1012,6 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         }
     }
 
-    private boolean storageBindingEnabledForNewSession() {
-        if (!settings.bindExternalStorage()) return false;
-        if (StoragePermission.granted(this)) return true;
-        settings.setBindExternalStorage(false);
-        return false;
-    }
-
     private void disableStorageBindingIfPermissionRevoked() {
         if (settings.bindExternalStorage() && !StoragePermission.granted(this)) {
             settings.setBindExternalStorage(false);
@@ -1046,6 +1072,12 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
             } else if (resultCode == RESULT_OK && UserlandRootfs.isUsable(this)) {
                 // Setup-only mode: open a tab into the fresh userland.
                 createSession(true);
+            }
+            // A session created while the wizard ran (headless API) was not
+            // switched to then (onSessionsChanged waits for onboarding); a
+            // canceled wizard spawns nothing, so adopt it now.
+            if (current == null && !sessions.isEmpty()) {
+                switchTo(sessions.sessions().get(0));
             }
             return;
         }
@@ -1360,10 +1392,24 @@ public class MainActivity extends Activity implements TerminalSession.Listener {
         return s.isVm() ? s.label() : s.label() + ":" + (index + 1);
     }
 
+    /**
+     * The session drawn at tab {@code index} by the last {@link #updateTabs},
+     * or null if it has gone since. The headless API adds and closes sessions
+     * off the main thread and the strip hears of it only through a posted
+     * refresh, so resolving a tap against the live list could hit the wrong
+     * session — or run past its end.
+     */
+    private TerminalSession tabAt(int index) {
+        if (index < 0 || index >= tabSessions.size()) return null;
+        TerminalSession s = tabSessions.get(index);
+        return sessions.indexOf(s) >= 0 ? s : null;
+    }
+
     private void updateTabs() {
         List<String> titles = new ArrayList<>();
         List<TabStripView.TabProgress> progress = new ArrayList<>();
         List<TerminalSession> all = sessions.sessions();
+        tabSessions = all;
         TerminalInputFieldView.retainSessions(all);
         boolean showProgress = settings.showProgress();
         for (int i = 0; i < all.size(); i++) {

@@ -359,7 +359,8 @@ public final class UserlandRootfs {
         // passwd shell, else /bin/bash or /bin/sh. Null only when the rootfs has
         // no usable shell at all — a session there would die instantly.
         String shellCmd = resolveLoginShell(root, opts.loginShell, opts.identity);
-        if (shellCmd == null) {
+        boolean exactCommand = opts.command != null && opts.command.length > 0;
+        if (shellCmd == null && !exactCommand) {
             throw new IOException("Userland rootfs is incomplete: no login shell "
                     + "(/bin/bash or /bin/sh) found (deleted outside the app?)");
         }
@@ -420,10 +421,18 @@ public final class UserlandRootfs {
         String path = opts.path == null ? "" : opts.path.trim();
         argv.add("-E");
         argv.add("PATH=" + (path.isEmpty() ? UserlandOptions.DEFAULT_PATH : path));
+        // Caller-supplied guest env (headless exec) last, so it wins.
+        for (String kv : opts.extraEnv) {
+            argv.add("-E");
+            argv.add(kv);
+        }
         // Positional rootfs, then the guest login command (shell + its args),
         // run directly. The login flag now rides in the configured value (e.g.
-        // -l), so there is no separate --login here.
-        String[] shellTokens = shellCmd.trim().split("\\s+");
+        // -l), so there is no separate --login here. An exact command (the
+        // headless API) replaces it verbatim — no whitespace split, so its
+        // quoting survives.
+        String[] shellTokens = exactCommand ? opts.command
+                : shellCmd.trim().split("\\s+");
         argv.add(root.getAbsolutePath());
         for (String tok : shellTokens) argv.add(tok);
         // Host env for the fork()ed child — this becomes arm64chroot's process
@@ -459,6 +468,15 @@ public final class UserlandRootfs {
             dir = guestDir(root, UserlandIdentity.homeForIdentity(root, identity));
         }
         return dir != null ? dir : "/";
+    }
+
+    /**
+     * Whether {@code path} names an existing directory inside the installed
+     * rootfs, by the same rules as the Working-directory setting. For callers
+     * that must refuse a bad directory instead of falling back (headless cwd).
+     */
+    public static boolean isGuestDir(Context ctx, String path) {
+        return guestDir(dir(ctx), path) != null;
     }
 
     /**

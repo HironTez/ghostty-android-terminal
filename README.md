@@ -122,8 +122,13 @@ made of regular files, directories and links only.
   to the bottom.
 - **Font size**: pinch to zoom (8–40 sp, persisted across restarts); the
   shell grid reflows to the new cell size.
-- **Lifecycle**: sessions survive rotation but not process death; there is
-  no background service keeping shells alive once the app is killed.
+- **Lifecycle**: sessions survive rotation and backgrounding (a foreground
+  service with a persistent notification keeps the process alive), but not
+  process death.
+- **Headless over ADB**: the app can be driven from a host with no UI —
+  interactive shells, `exec` with exit codes, distro install, guest-machine
+  terminals — through `scripts/gterm`. See
+  [docs/headless-api.md](docs/headless-api.md).
 
 ## Tests
 
@@ -144,6 +149,8 @@ See [docs/testing.md](docs/testing.md).
 - [docs/native-build.md](docs/native-build.md) — how the Ghostty library is
   cross-compiled and how to upgrade it
 - [docs/testing.md](docs/testing.md) — test suites and how to run them
+- [docs/headless-api.md](docs/headless-api.md) — headless ADB control API,
+  device setup, `scripts/gterm`
 - [docs/input-field.md](docs/input-field.md) — the Aa draft input field
 
 ## License

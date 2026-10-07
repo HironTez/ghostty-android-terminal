@@ -10,12 +10,15 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.util.Log;
 
 import io.github.sylirre.terminal.R;
+import io.github.sylirre.terminal.headless.HeadlessServer;
 
 /**
  * Keeps the app's process alive while shells are running.
@@ -34,8 +37,38 @@ import io.github.sylirre.terminal.R;
  * service itself tears the sessions down and then calls the Activity's
  * {@linkplain #setExitListener exit listener}, if one is registered, to
  * finish it.
+ *
+ * Headless mode: the service is exported, guarded by
+ * {@code android.permission.DUMP} (held by the adb shell, never by ordinary
+ * apps), so {@code adb shell am start-foreground-service -a}
+ * {@link #ACTION_HEADLESS_START} brings it up with no Activity at all. It then
+ * runs the {@link HeadlessServer} socket API, holds the CPU wake lock (unless
+ * the start intent says {@code --ez wakelock false}), and is sticky: after a
+ * low-memory kill the system restarts it and the server comes back (the shells
+ * do not). While headless mode is on, {@link #stop} keeps the service running,
+ * so closing the last tab in the UI does not cut the remote client off.
  */
 public final class SessionService extends Service {
+    private static final String TAG = "SessionService";
+
+    /** Starts headless mode: foreground, socket server, wake lock. */
+    public static final String ACTION_HEADLESS_START = "io.github.sylirre.terminal.headless.START";
+    /** Stops headless mode; the service stays only while sessions remain. */
+    public static final String ACTION_HEADLESS_STOP = "io.github.sylirre.terminal.headless.STOP";
+    /** Boolean extra of {@link #ACTION_HEADLESS_START}: hold the wake lock (default true). */
+    public static final String EXTRA_WAKELOCK = "wakelock";
+    /** Explicit wake-lock state (the headless {@code wakelock} op; boolean extra "on"). */
+    private static final String ACTION_SET_WAKELOCK = "io.github.sylirre.terminal.service.SET_WAKELOCK";
+
+    private static final String PREFS = "headless";
+    private static final String KEY_HEADLESS = "enabled";
+    private static final String KEY_AUTOSTART = "autostart";
+    /** The wake-lock choice a sticky restart and the boot autostart reapply. */
+    private static final String KEY_WAKELOCK = "wakelock";
+
+    private static volatile boolean wakeLockHeld;
+    /** The running instance (main thread writes), for in-process updates. */
+    private static volatile SessionService running;
 
     /** Bring the service to (or keep it in) the foreground; refresh the notification. */
     private static final String ACTION_START = "io.github.sylirre.terminal.service.START";
@@ -85,9 +118,110 @@ public final class SessionService extends Service {
         context.startForegroundService(intent(context, ACTION_START));
     }
 
-    /** Stops the service; the persistent notification disappears with it. */
+    /**
+     * {@link #refresh} from a context that may be in the background (the
+     * session reaper): a start the platform refuses there is logged, not
+     * thrown — the service is normally already running in that case.
+     */
+    public static void refreshQuietly(Context context) {
+        if (notifyChanged()) return;
+        try {
+            refresh(context);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "notification refresh refused", e);
+        }
+    }
+
+    /**
+     * Re-posts the notification of the already running service, in process,
+     * with no start intent (which a background app may be refused). Returns
+     * false when the service is not running.
+     */
+    public static boolean notifyChanged() {
+        SessionService s = running;
+        if (s == null) return false;
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+            if (running == s) s.startForeground();
+        });
+        return true;
+    }
+
+    /**
+     * Stops the service; the persistent notification disappears with it. In
+     * headless mode it only refreshes the notification instead — the remote
+     * API must outlive the last tab.
+     */
     public static void stop(Context context) {
+        if (HeadlessServer.isRunning()) {
+            refreshQuietly(context);
+            return;
+        }
         context.stopService(intent(context, null));
+    }
+
+    /** Starts headless mode from inside the app (tests, boot receiver). */
+    public static void startHeadless(Context context, boolean wakeLock) {
+        context.startForegroundService(intent(context, ACTION_HEADLESS_START)
+                .putExtra(EXTRA_WAKELOCK, wakeLock));
+    }
+
+    /**
+     * Sets the CPU wake lock on or off. Works in process on the running
+     * service; otherwise falls back to a start intent, which needs the app to
+     * be allowed a background foreground-service start (device-idle allowlist).
+     */
+    public static void setWakeLock(Context context, boolean on) {
+        setHeadlessWakeLock(context, on);
+        SessionService s = running;
+        if (s != null) {
+            wakeLockHeld = on; // the state the caller can read back at once
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                if (on) s.acquireWakeLock();
+                else s.releaseWakeLock();
+                s.startForeground();
+            });
+            return;
+        }
+        context.startForegroundService(intent(context, ACTION_SET_WAKELOCK)
+                .putExtra("on", on));
+    }
+
+    /** Whether the service currently holds its partial wake lock. */
+    public static boolean wakeLockHeld() {
+        return wakeLockHeld;
+    }
+
+    private static SharedPreferences prefs(Context context) {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    /**
+     * Whether headless mode should come back by itself: after a sticky restart,
+     * and — when {@link #autostart} is also on — after boot.
+     */
+    public static boolean headlessEnabled(Context context) {
+        return prefs(context).getBoolean(KEY_HEADLESS, false);
+    }
+
+    /**
+     * Whether headless mode holds the wake lock when it comes back by itself
+     * (sticky restart, boot): the last explicit choice, default on.
+     */
+    public static boolean headlessWakeLock(Context context) {
+        return prefs(context).getBoolean(KEY_WAKELOCK, true);
+    }
+
+    private static void setHeadlessWakeLock(Context context, boolean on) {
+        prefs(context).edit().putBoolean(KEY_WAKELOCK, on).apply();
+    }
+
+    /** Opt-in: start headless mode on BOOT_COMPLETED (off by default). */
+    public static boolean autostart(Context context) {
+        return prefs(context).getBoolean(KEY_AUTOSTART, false);
+    }
+
+    public static void setAutostart(Context context, boolean on) {
+        prefs(context).edit().putBoolean(KEY_AUTOSTART, on).apply();
     }
 
     private static Intent intent(Context context, String action) {
@@ -97,9 +231,16 @@ public final class SessionService extends Service {
     }
 
     @Override
+    public void onCreate() {
+        super.onCreate();
+        running = this;
+    }
+
+    @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
         if (ACTION_EXIT.equals(action)) {
+            stopHeadless();
             SessionManager.get().closeAll();
             // Tell a live Activity (if any) to finish and drop its task.
             Runnable onExited = exitListener;
@@ -109,13 +250,65 @@ public final class SessionService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
+        // A null intent is a sticky restart after the process was killed: it
+        // only happens while headless mode was on, so bring the server back.
+        boolean headlessStart = ACTION_HEADLESS_START.equals(action)
+                || (intent == null && headlessEnabled(this));
+        if (ACTION_HEADLESS_STOP.equals(action)) {
+            stopHeadless();
+            releaseWakeLock();
+            if (SessionManager.get().isEmpty()) {
+                // Must still satisfy the startForegroundService contract.
+                startForeground();
+                stopForeground(STOP_FOREGROUND_REMOVE);
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+        }
         if (ACTION_TOGGLE_WAKELOCK.equals(action)) {
             toggleWakeLock();
+            setHeadlessWakeLock(this, wakeLockHeld);
+        }
+        if (ACTION_SET_WAKELOCK.equals(action)) {
+            boolean on = intent.getBooleanExtra("on", true);
+            setHeadlessWakeLock(this, on);
+            if (on) acquireWakeLock();
+            else releaseWakeLock();
         }
         startForeground();
-        // No point resurrecting an empty service: a restart cannot recover
-        // the shells that died with the process.
-        return START_NOT_STICKY;
+        if (headlessStart) {
+            try {
+                HeadlessServer.start(getApplicationContext());
+                prefs(this).edit().putBoolean(KEY_HEADLESS, true).apply();
+                // A sticky restart has no extras: reapply the last choice, so
+                // `gterm start --no-wakelock` survives the process being killed.
+                boolean wake = intent == null ? headlessWakeLock(this)
+                        : intent.getBooleanExtra(EXTRA_WAKELOCK, true);
+                if (intent != null) setHeadlessWakeLock(this, wake);
+                if (wake) acquireWakeLock();
+                startForeground(); // reflect the wake lock in the notification
+            } catch (java.io.IOException e) {
+                Log.e(TAG, "headless server failed to start: " + e.getMessage(), e);
+                if (SessionManager.get().isEmpty()) {
+                    // Nothing left to keep the process up for: no lingering
+                    // "0 sessions" notification. (gterm start finds the
+                    // reason in the log once the dump is gone with us.)
+                    releaseWakeLock();
+                    stopForeground(STOP_FOREGROUND_REMOVE);
+                    stopSelf();
+                    return START_NOT_STICKY;
+                }
+            }
+        }
+        // Sticky only in headless mode, where a restart restores reachability.
+        // Otherwise there is no point resurrecting an empty service: a restart
+        // cannot recover the shells that died with the process.
+        return HeadlessServer.isRunning() ? START_STICKY : START_NOT_STICKY;
+    }
+
+    private void stopHeadless() {
+        HeadlessServer.stop();
+        prefs(this).edit().putBoolean(KEY_HEADLESS, false).apply();
     }
 
     /**
@@ -154,7 +347,9 @@ public final class SessionService extends Service {
         boolean held = wakeLock != null && wakeLock.isHeld();
         String text = getResources().getQuantityString(
                 R.plurals.notification_sessions_running, count, count)
-                + (held ? getString(R.string.notification_wakelock_active) : "");
+                + (held ? getString(R.string.notification_wakelock_active) : "")
+                + (HeadlessServer.isRunning()
+                        ? getString(R.string.notification_headless_active) : "");
 
         PendingIntent content = PendingIntent.getActivity(this, 0,
                 getPackageManager().getLaunchIntentForPackage(getPackageName()),
@@ -189,6 +384,10 @@ public final class SessionService extends Service {
             releaseWakeLock();
             return;
         }
+        acquireWakeLock();
+    }
+
+    private void acquireWakeLock() {
         if (wakeLock == null) {
             PowerManager pm = getSystemService(PowerManager.class);
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,
@@ -196,17 +395,46 @@ public final class SessionService extends Service {
             wakeLock.setReferenceCounted(false);
         }
         wakeLock.acquire();
+        wakeLockHeld = true;
     }
 
     private void releaseWakeLock() {
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }
+        wakeLockHeld = false;
     }
 
     @Override
     public void onDestroy() {
+        if (running == this) running = null;
         releaseWakeLock();
+        // The server must not outlive the service that keeps the process up;
+        // the persisted flag stays, so a sticky restart brings it back.
+        HeadlessServer.stop();
+    }
+
+    /**
+     * {@code adb shell dumpsys activity service <pkg>/.term.SessionService
+     * [headless-key]}: the headless server's state and, only when asked by
+     * name, its per-start key. dumpsys requires DUMP (the adb shell has it,
+     * apps do not), so this is how {@code gterm} learns the key it then checks
+     * the server against. Not printed for a plain dump, which bug reports
+     * include.
+     */
+    @Override
+    protected void dump(java.io.FileDescriptor fd, java.io.PrintWriter pw, String[] args) {
+        String key = HeadlessServer.keyHex();
+        String err = HeadlessServer.lastError();
+        pw.println("headless: " + (key != null ? "running"
+                : err != null ? "failed: " + err : "stopped"));
+        pw.println("sessions: " + SessionManager.get().sessions().size());
+        pw.println("wakelock: " + wakeLockHeld);
+        if (key != null && args != null) {
+            for (String a : args) {
+                if ("headless-key".equals(a)) pw.println("headless-key=" + key);
+            }
+        }
     }
 
     @Override

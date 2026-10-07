@@ -1,0 +1,682 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sylirre
+"""gterm: host client for the terminal app's headless ADB API.
+
+Talks to the app's abstract socket through `adb forward`. Python 3 standard
+library only (POSIX hosts: Linux, macOS). See docs/headless-api.md.
+
+  gterm start                     start headless mode (am start-foreground-service)
+  gterm stop                      stop headless mode
+  gterm status                    rootfs / distros / sessions / VM / wake lock
+  gterm key                       print the server key (export as GTERM_KEY)
+  gterm ls                        list sessions
+  gterm shell [--android|--vm]    new interactive session (userland by default)
+  gterm spawn [TYPE] [-d] [--terminal N] [-- ARGV...]
+  gterm attach ID                 attach to a running session
+  gterm kill ID
+  gterm exec [-t] [--type T] [--cwd DIR] [-e K=V]... [--argv] -- CMD...
+  gterm install [DISTRO]
+  gterm wakelock on|off
+  gterm autostart on|off          start headless mode at boot (opt-in)
+  gterm vm-stop
+
+Interactive sessions put the local tty in raw mode and forward window size
+changes. Ctrl-] detaches (the session keeps running; `gterm attach ID`).
+exec exits with the remote command's exit status (128+N for signal N);
+Ctrl-C is forwarded, and a second Ctrl-C within a second makes gterm itself
+give up (exit 130); the server hangs the command up when it sees the close.
+
+Every connection first checks that the server is the app: it answers a
+random nonce with an HMAC under a per-start key that only the adb shell can
+read (`dumpsys`), so another app squatting the socket name gets nothing.
+
+gterm's own failures (no connection, refused request, failed identity check)
+exit 255, like ssh.
+
+Environment: ADB (adb binary), ANDROID_SERIAL (device), GTERM_PORT (local
+port, default 7777), GTERM_NO_FORWARD=1 (skip `adb forward`, e.g. when the
+port is already forwarded or tunnelled), GTERM_KEY (the server key, skipping
+the `dumpsys` lookup; `gterm key` prints it).
+"""
+
+import argparse
+import hashlib
+import hmac
+import json
+import os
+import re
+import select
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+PKG = "io.github.sylirre.terminal"
+SOCKET_NAME = PKG + ".headless"
+SERVICE = PKG + "/.term.SessionService"
+
+DATA, STDERR, RESIZE, EOF, SIGNAL, EXIT, PROGRESS = range(7)
+DETACH_KEY = b"\x1d"  # Ctrl-]
+
+
+def die(msg, code=255):
+    sys.stderr.write("gterm: %s\n" % msg)
+    sys.exit(code)
+
+
+def adb(*args, check=True, capture=False):
+    cmd = [os.environ.get("ADB", "adb")] + list(args)
+    try:
+        # stdin from /dev/null: `adb shell` would otherwise swallow the input
+        # meant for the remote command (gterm exec < file).
+        return subprocess.run(cmd, check=check, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE if capture else None,
+                              universal_newlines=True)
+    except FileNotFoundError:
+        die("adb not found (set ADB=/path/to/adb)")
+    except subprocess.CalledProcessError as e:
+        die("%s failed with exit %d" % (" ".join(cmd), e.returncode))
+
+
+def port():
+    return int(os.environ.get("GTERM_PORT", "7777"))
+
+
+def ensure_forward():
+    if os.environ.get("GTERM_NO_FORWARD"):
+        return
+    adb("forward", "tcp:%d" % port(), "localabstract:" + SOCKET_NAME, capture=True)
+
+
+def service_dump(*args):
+    """The SessionService dump (DUMP-guarded: only the adb shell can read it)."""
+    r = adb("shell", "dumpsys", "activity", "service", SERVICE, *args, check=False, capture=True)
+    return r.stdout or ""
+
+
+def server_key():
+    """The running server's per-start key, or dies saying why there is none."""
+    key = os.environ.get("GTERM_KEY")
+    if key:
+        return key.strip()
+    dump = service_dump("headless-key")
+    m = re.search(r"headless-key=([0-9a-f]{64})", dump)
+    if m:
+        return m.group(1)
+    m = re.search(r"headless: (.*)", dump)
+    if m and m.group(1).startswith("failed"):
+        die("headless server %s (another app holding the socket name?)" % m.group(1).strip())
+    die("headless mode is off (try `gterm start`)")
+
+
+class Conn:
+    def __init__(self):
+        key = server_key()
+        ensure_forward()
+        try:
+            self.sock = socket.create_connection(("127.0.0.1", port()), timeout=10)
+        except OSError as e:
+            die("cannot connect to 127.0.0.1:%d: %s" % (port(), e))
+        self.buf = b""
+        self.verify(key)
+        self.sock.settimeout(None)
+
+    VERIFY_TIMEOUT = 15  # seconds; the app answers at once, an impostor may never
+
+    def verify(self, key):
+        """Nothing else is sent before the server proves it holds the key."""
+        nonce = os.urandom(16).hex()
+        self.sock.settimeout(self.VERIFY_TIMEOUT)
+        try:
+            # check=False: request()'s error path would print what an impostor sent.
+            resp = self.request({"op": "hello", "nonce": nonce}, check=False)
+        except socket.timeout:
+            self.sock.close()
+            die("server identity check timed out: nothing on %s answered within %ds"
+                % (SOCKET_NAME, self.VERIFY_TIMEOUT))
+        try:
+            want = hmac.new(bytes.fromhex(key), ("gterm-hello-v1:" + nonce).encode(),
+                            hashlib.sha256).hexdigest()
+        except ValueError:
+            die("GTERM_KEY is not a hex key")
+        if not hmac.compare_digest(str(resp.get("proof", "")), want):
+            self.sock.close()
+            die("server identity check failed: whatever answers on %s is not this app's "
+                "headless server (another app squatting the name, or a stale GTERM_KEY); "
+                "refusing to send anything" % SOCKET_NAME)
+
+    def request(self, req, check=True):
+        req = dict(req, v=1)
+        self.sock.sendall((json.dumps(req) + "\n").encode())
+        while b"\n" not in self.buf:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                die("connection closed before a response (is headless mode on? try `gterm start`)")
+            self.buf += chunk
+        line, self.buf = self.buf.split(b"\n", 1)
+        try:
+            resp = json.loads(line.decode())
+        except ValueError:
+            die("bad response: %r" % line[:200])
+        if not isinstance(resp, dict):
+            die("bad response" if not check else "bad response: %r" % line[:200])
+        if check and not resp.get("ok"):
+            die(resp.get("error", "request failed"))
+        return resp
+
+    # Streaming: frames are queued and written only when the socket is
+    # writable. A blocking sendall deadlocked against a command that reads
+    # stdin and writes stdout in volume: gterm stuck sending, the server stuck
+    # writing output gterm was not reading.
+    OUT_HIGH = 1 << 20  # stop reading local input while this much is queued
+
+    def stream(self):
+        self.sock.setblocking(False)
+        self.out = bytearray()
+
+    def send(self, ftype, payload=b""):
+        self.out += struct.pack(">BI", ftype, len(payload)) + payload
+
+    def wants_write(self):
+        return bool(self.out)
+
+    def backlogged(self):
+        return len(self.out) >= self.OUT_HIGH
+
+    def flush_some(self):
+        try:
+            n = self.sock.send(self.out)
+        except BlockingIOError:
+            return
+        except OSError:
+            # Peer gone: drop the backlog; the read side reports the close.
+            self.out.clear()
+            return
+        del self.out[:n]
+
+    def flush_all(self):
+        while self.out:
+            select.select([], [self.sock], [])
+            self.flush_some()
+
+    def buffered_frames(self):
+        """Takes the complete frames already in the buffer (e.g. those that
+        arrived in the same recv as the response line)."""
+        out = []
+        while len(self.buf) >= 5:
+            ftype, n = struct.unpack(">BI", self.buf[:5])
+            if len(self.buf) < 5 + n:
+                break
+            out.append((ftype, self.buf[5:5 + n]))
+            self.buf = self.buf[5 + n:]
+        return out
+
+    def frames(self):
+        """Yields (type, payload) until the server closes the connection."""
+        while True:
+            yield from self.buffered_frames()
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                return
+            self.buf += chunk
+
+    def read_available(self):
+        """Non-blocking step for select loops: returns (complete frames, eof).
+        At EOF the frames still buffered come with it: the server sends EXIT
+        and closes, and both can arrive in one go."""
+        try:
+            chunk = self.sock.recv(65536)
+        except BlockingIOError:
+            return [], False
+        self.buf += chunk
+        return self.buffered_frames(), not chunk
+
+
+def exit_status(code):
+    return 128 + (-code) if code < 0 else code & 0xFF
+
+
+def term_size():
+    try:
+        sz = os.get_terminal_size(sys.stdout.fileno())
+        return sz.columns, sz.lines
+    except OSError:
+        return 80, 24
+
+
+def write_out(fd, data):
+    while data:
+        n = os.write(fd, data)
+        data = data[n:]
+
+
+# --- interactive ----------------------------------------------------------------
+
+def interactive(req):
+    """Runs a spawn/attach request with the local tty in raw mode."""
+    tty = sys.stdin.isatty()
+    cols, rows = term_size()
+    req = dict(req, cols=cols, rows=rows)
+    conn = Conn()
+    resp = conn.request(req)
+    sid = resp.get("id")
+    conn.stream()
+    if tty:
+        sys.stderr.write("[gterm: session %s (%s); Ctrl-] detaches]\r\n" % (sid, resp.get("type")))
+
+    import termios
+    import tty as ttymod
+    saved = termios.tcgetattr(sys.stdin.fileno()) if tty else None
+    rfd, wfd = os.pipe()  # self-pipe for SIGWINCH
+
+    def on_winch(signum, frame):
+        os.write(wfd, b"w")
+
+    def on_term(signum, frame):
+        raise SystemExit(128 + signum)  # unwinds through the tty restore below
+
+    signal.signal(signal.SIGWINCH, on_winch)
+    for s in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, on_term)
+    code = None
+    detached = False
+    try:
+        if tty:
+            # TCSANOW, not setraw's default TCSAFLUSH: keep typeahead.
+            ttymod.setraw(sys.stdin.fileno(), termios.TCSANOW)
+        # Frames that arrived along with the response line.
+        pending = conn.buffered_frames()
+        stdin_open = True
+        eof = False
+        while code is None:
+            for ftype, payload in pending:
+                if ftype == DATA:
+                    write_out(sys.stdout.fileno(), payload)
+                elif ftype == EXIT:
+                    code = struct.unpack(">i", payload)[0]
+            pending = []
+            if code is not None or eof:
+                break
+            fds = [conn.sock, rfd] + ([sys.stdin] if stdin_open and not conn.backlogged() else [])
+            ready, writable, _ = select.select(fds, [conn.sock] if conn.wants_write() else [], [])
+            if writable:
+                conn.flush_some()
+            if rfd in ready:
+                os.read(rfd, 64)
+                c, r = term_size()
+                conn.send(RESIZE, struct.pack(">HH", c, r))
+            if sys.stdin in ready:
+                data = os.read(sys.stdin.fileno(), 65536)
+                if not data:
+                    stdin_open = False  # piped input ended; keep showing output
+                    continue
+                if tty and DETACH_KEY in data:
+                    before = data.split(DETACH_KEY, 1)[0]
+                    if before:
+                        conn.send(DATA, before)
+                    conn.flush_all()
+                    detached = True
+                    break
+                conn.send(DATA, data)
+            if conn.sock in ready:
+                pending, eof = conn.read_available()
+    except OSError:
+        code = None  # connection reset: reported below like a close
+    finally:
+        signal.signal(signal.SIGWINCH, signal.SIG_DFL)
+        if saved is not None:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, saved)
+        conn.sock.close()
+        os.close(rfd)
+        os.close(wfd)
+    if detached:
+        sys.stderr.write("\n[gterm: detached from session %s; `gterm attach %s` resumes]\n" % (sid, sid))
+        return 0
+    if code is None:
+        sys.stderr.write("\n[gterm: connection closed (session %s attached elsewhere or server stopped)]\n" % sid)
+        return 255
+    return exit_status(code)
+
+
+# --- commands -----------------------------------------------------------------------
+
+def cmd_start(a):
+    extra = ["--ez", "wakelock", "false"] if a.no_wakelock else []
+    # Device time, for the log lookup below ("MM-DD hh:mm:ss.mmm", logcat -T).
+    since = adb("shell", "date '+%m-%d %H:%M:%S.000'", capture=True).stdout.strip()
+    adb("shell", "am", "start-foreground-service", "-n", SERVICE,
+        "-a", PKG + ".headless.START", *extra)
+    for _ in range(20):
+        dump = service_dump()
+        m = re.search(r"headless: (.*)", dump)
+        if m and m.group(1).strip() == "running":
+            return 0
+        if m and m.group(1).startswith("failed"):
+            die("headless server %s (another app holding the socket name?)" % m.group(1).strip())
+        time.sleep(0.25)
+    # With no session to keep, a service whose server failed stops itself,
+    # and its dump goes with it; the reason is still in the log.
+    log = adb("logcat", "-d", "-T", since, "-s", "SessionService:E",
+              check=False, capture=True).stdout or ""
+    m = re.findall(r"headless server failed to start: (.*)", log)
+    if m:
+        die("headless server failed: %s (another app holding the socket name?)" % m[-1].strip())
+    die("headless server did not come up (adb logcat -s SessionService HeadlessServer)")
+
+
+def cmd_key(a):
+    print(server_key())
+    return 0
+
+
+def cmd_stop(a):
+    adb("shell", "am", "start-foreground-service", "-n", SERVICE, "-a", PKG + ".headless.STOP")
+    return 0
+
+
+def cmd_status(a):
+    r = Conn().request({"op": "status"})
+    r.pop("ok", None)
+    r.pop("v", None)
+    print(json.dumps(r, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_ls(a):
+    r = Conn().request({"op": "list"})
+    if a.json:
+        print(json.dumps(r["sessions"], indent=2))
+        return 0
+    print("%-4s %-9s %-9s %-9s %-6s %-5s %s" % ("ID", "TYPE", "SIZE", "STATE", "ATTACH", "UI", "TITLE"))
+    for s in r["sessions"]:
+        state = "running" if s["exit"] is None else "exit %s" % s["exit"]
+        print("%-4s %-9s %-9s %-9s %-6s %-5s %s" % (
+            s["id"], s["type"], "%dx%d" % (s["cols"], s["rows"]), state,
+            "yes" if s["attached"] else "-", "yes" if s.get("ui") else "-",
+            s["title"] or s["label"]))
+    return 0
+
+
+def cmd_shell(a):
+    req = {"op": "spawn"}
+    if a.android:
+        req["type"] = "shell"
+    elif a.vm:
+        req["type"] = "vm"
+    return interactive(req)
+
+
+def cmd_spawn(a):
+    req = {"op": "spawn"}
+    if a.type:
+        req["type"] = a.type
+    if a.terminal is not None:
+        req["terminal"] = a.terminal
+    if a.argv:
+        req["argv"] = a.argv
+    if a.detach:
+        req["attach"] = False
+        req["cols"], req["rows"] = term_size()
+        r = Conn().request(req)
+        print(r["id"])
+        return 0
+    return interactive(req)
+
+
+def cmd_attach(a):
+    return interactive({"op": "attach", "id": a.id})
+
+
+def cmd_kill(a):
+    Conn().request({"op": "kill", "id": a.id})
+    return 0
+
+
+def parse_env(items):
+    env = {}
+    for kv in items or []:
+        if "=" not in kv:
+            die("-e wants NAME=value, got %r" % kv)
+        k, v = kv.split("=", 1)
+        env[k] = v
+    return env
+
+
+def cmd_exec(a):
+    if not a.command:
+        die("exec: no command (gterm exec -- CMD...)")
+    req = {"op": "exec"}
+    if a.type:
+        req["type"] = a.type
+    if a.cwd:
+        req["cwd"] = a.cwd
+    env = parse_env(a.env)
+    if env:
+        req["env"] = env
+    if a.exact_argv:
+        req["argv"] = a.command
+    else:
+        # ssh semantics: the words are joined and run by the target's sh.
+        req["cmd"] = " ".join(a.command)
+    if a.tty:
+        req["tty"] = True
+        return interactive(req)
+
+    conn = Conn()
+    pid = conn.request(req).get("pid")
+    conn.stream()
+
+    def deliver(signum):
+        # In band, a SIGNAL frame waits behind every queued DATA frame; with
+        # stdin backed up (a command not reading it) Ctrl-C would never land.
+        # Then it goes through a second connection, by pid.
+        if not conn.wants_write():
+            conn.send(SIGNAL, bytes([signum]))
+            return
+        side = Conn()
+        try:
+            side.request({"op": "signal", "pid": pid, "sig": signum}, check=False)
+        finally:
+            side.sock.close()
+
+    # The handler only queues the signal; the loop sends it. Sending from the
+    # handler could land a SIGNAL frame inside a half-sent DATA frame.
+    sig_r, sig_w = os.pipe()
+    os.set_blocking(sig_w, False)
+
+    def forward_signal(signum, frame):
+        try:
+            os.write(sig_w, bytes([signum]))
+        except OSError:
+            pass
+
+    for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(s, forward_signal)
+
+    stdin_open = not a.no_stdin
+    if not stdin_open:
+        conn.send(EOF)
+    code = None
+    out, err = sys.stdout.fileno(), sys.stderr.fileno()
+
+    def handle(frames):
+        nonlocal code
+        for ftype, payload in frames:
+            if ftype == DATA:
+                write_out(out, payload)
+            elif ftype == STDERR:
+                write_out(err, payload)
+            elif ftype == EXIT:
+                code = struct.unpack(">i", payload)[0]
+
+    # Output (even the EXIT) of a quick command can arrive with the response.
+    handle(conn.buffered_frames())
+    last_int = None
+    while code is None:
+        fds = [conn.sock, sig_r] + ([sys.stdin] if stdin_open and not conn.backlogged() else [])
+        ready, writable, _ = select.select(fds, [conn.sock] if conn.wants_write() else [], [])
+        if writable:
+            conn.flush_some()
+        if sig_r in ready:
+            for signum in os.read(sig_r, 64):
+                if signum == signal.SIGINT:
+                    # A second Ctrl-C within a second gives up locally (like
+                    # ssh): the server then hangs the command up.
+                    now = time.monotonic()
+                    if last_int is not None and now - last_int < 1.0:
+                        conn.sock.close()
+                        die("interrupted; the remote command is hung up once the server sees the close", 130)
+                    last_int = now
+                deliver(signum)
+        if sys.stdin in ready:
+            data = os.read(sys.stdin.fileno(), 65536)
+            if data:
+                conn.send(DATA, data)
+            else:
+                conn.send(EOF)
+                stdin_open = False
+        if conn.sock in ready:
+            got, eof = conn.read_available()
+            handle(got)
+            if eof:
+                break
+    conn.sock.close()
+    if code is None:
+        die("connection closed without an exit status")
+    return exit_status(code)
+
+
+def cmd_install(a):
+    req = {"op": "install"}
+    if a.distro:
+        req["distro"] = a.distro
+    conn = Conn()
+    r = conn.request(req)
+    sys.stderr.write("installing %s %s\n" % (r.get("distro"), r.get("version")))
+    code = None
+    for ftype, payload in conn.frames():
+        if ftype == PROGRESS:
+            p = json.loads(payload.decode())
+            st = p.get("state")
+            if st == "extracting":
+                pct = p.get("percent")
+                sys.stderr.write("\r  %s%d MiB extracted   " % (
+                    "%d%%  " % pct if pct is not None else "", p.get("extracted", 0) >> 20))
+            elif st == "failed":
+                sys.stderr.write("\nfailed: %s\n" % p.get("error"))
+            elif st == "already-installed":
+                sys.stderr.write("a rootfs is already installed (%s); left as is\n" % p.get("distro"))
+            elif st == "done":
+                sys.stderr.write("\rdone%s\n" % (" " * 30))
+        elif ftype == EXIT:
+            code = struct.unpack(">i", payload)[0]
+    return 255 if code is None else exit_status(code)
+
+
+def on_off(v):
+    if v not in ("on", "off"):
+        raise argparse.ArgumentTypeError("on or off")
+    return v == "on"
+
+
+def cmd_wakelock(a):
+    Conn().request({"op": "wakelock", "on": a.state})
+    return 0
+
+
+def cmd_autostart(a):
+    Conn().request({"op": "autostart", "on": a.state})
+    return 0
+
+
+def cmd_vm_stop(a):
+    r = Conn().request({"op": "vm-stop"})
+    print("stopped" if r.get("stopped") else "no machine was running")
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(prog="gterm", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", metavar="COMMAND")
+
+    s = sub.add_parser("start", help="start headless mode")
+    s.add_argument("--no-wakelock", action="store_true", help="do not hold the CPU wake lock")
+    s.set_defaults(fn=cmd_start)
+    sub.add_parser("stop", help="stop headless mode").set_defaults(fn=cmd_stop)
+    sub.add_parser("status", help="show device state").set_defaults(fn=cmd_status)
+    sub.add_parser("key", help="print the server key (for GTERM_KEY)").set_defaults(fn=cmd_key)
+
+    s = sub.add_parser("ls", help="list sessions")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_ls)
+
+    s = sub.add_parser("shell", help="new interactive session")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--android", action="store_true", help="/system/bin/sh instead of the userland")
+    g.add_argument("--vm", action="store_true", help="a guest-machine terminal (boots the VM if needed)")
+    s.set_defaults(fn=cmd_shell)
+
+    s = sub.add_parser("spawn", help="new session (optionally detached)")
+    s.add_argument("type", nargs="?", choices=["userland", "shell", "vm"])
+    s.add_argument("-d", "--detach", action="store_true", help="print the id instead of attaching")
+    s.add_argument("--terminal", type=int, help="guest terminal index (vm)")
+    s.add_argument("argv", nargs=argparse.REMAINDER, help="-- command to run instead of the login shell")
+    s.set_defaults(fn=cmd_spawn)
+
+    s = sub.add_parser("attach", help="attach to a session")
+    s.add_argument("id", type=int)
+    s.set_defaults(fn=cmd_attach)
+
+    s = sub.add_parser("kill", help="close a session")
+    s.add_argument("id", type=int)
+    s.set_defaults(fn=cmd_kill)
+
+    s = sub.add_parser("exec", help="run a command, propagate its exit status")
+    s.add_argument("-t", "--tty", action="store_true", help="run on a PTY (merged output)")
+    s.add_argument("--type", choices=["userland", "shell"])
+    s.add_argument("--cwd")
+    s.add_argument("-e", "--env", action="append", metavar="NAME=VALUE")
+    s.add_argument("--argv", dest="exact_argv", action="store_true",
+                   help="exact argv instead of a sh command line")
+    s.add_argument("-n", "--no-stdin", action="store_true", help="send EOF at once")
+    s.add_argument("command", nargs=argparse.REMAINDER)
+    s.set_defaults(fn=cmd_exec)
+
+    s = sub.add_parser("install", help="install a bundled distro")
+    s.add_argument("distro", nargs="?")
+    s.set_defaults(fn=cmd_install)
+
+    s = sub.add_parser("wakelock", help="hold or release the CPU wake lock")
+    s.add_argument("state", type=on_off)
+    s.set_defaults(fn=cmd_wakelock)
+
+    s = sub.add_parser("autostart", help="start headless mode after boot")
+    s.add_argument("state", type=on_off)
+    s.set_defaults(fn=cmd_autostart)
+
+    sub.add_parser("vm-stop", help="stop the guest machine").set_defaults(fn=cmd_vm_stop)
+
+    a = p.parse_args()
+    for attr in ("argv", "command"):
+        v = getattr(a, attr, None)
+        if v and v[0] == "--":
+            setattr(a, attr, v[1:])
+    if not getattr(a, "fn", None):
+        p.print_help()
+        return 2
+    return a.fn(a)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        sys.exit(141)
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except OSError as e:  # connection reset and the like: gterm's failure
+        die("connection lost: %s" % e)
